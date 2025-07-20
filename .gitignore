@@ -32,3 +32,4 @@ venv.bak/
 
 # User-specific settings files for this project
 *.json
+README_DEV.md
