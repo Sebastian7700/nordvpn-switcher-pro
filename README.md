@@ -88,7 +88,7 @@ During the interactive setup, you'll be asked to define your rotation strategy. 
 #### Server Selection Strategy (How to select)
 
 - **Best available (recommended for IP rotation)**: Uses NordVPN's algorithm to find a server with the best combination of low latency (distance from you) and low load. This is ideal for quickly getting a new, high-performance IP.
-- **Randomized by load (recommended for Geo rotation)**: Fetches *all* available servers for your chosen scope, groups them by load (0-20%, 20-30%, 30-40%, etc.), and picks a random server from the lowest-load bucket that still has unused servers. This provides greater server diversity.
+- **Randomized by load (recommended for Geo rotation)**: Fetches *all* available servers for your chosen setting, groups them by load (0-20%, 20-30%, 30-40%, etc.), and picks a random server from the lowest-load bucket that still has unused servers. This provides greater server diversity.
 
 ## Advanced Usage
 
