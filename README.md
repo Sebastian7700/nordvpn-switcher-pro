@@ -1,6 +1,6 @@
 # NordVPN Switcher Pro
 
-[![PyPI version](https://badge.fury.io/py/nordvpn-switcher-pro.svg)](https://badge.fury.io/py/nordvpn-switcher-pro)
+[![PyPI version](https://badge.fury.io/py/nordvpn-switcher-pro.svg?v=101)](https://badge.fury.io/py/nordvpn-switcher-pro)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Python versions](https://img.shields.io/pypi/pyversions/nordvpn-switcher-pro.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue.svg)
