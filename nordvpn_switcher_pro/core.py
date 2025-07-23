@@ -118,7 +118,7 @@ class VpnSwitcher:
 
         if self._current_limit >= 0:
             self._fetch_and_build_pool()
-            print(f"\n\x1b[32mSession started with {len(self._current_server_pool)} servers in the initial pool. Ready to rotate.\x1b[0m")
+            print(f"\n\x1b[32mSession started and server pool initialized. Ready to rotate.\x1b[0m")
         else:
             print("\n\x1b[32mSession started in 'special' mode. Ready to rotate.\x1b[0m")
     
@@ -155,12 +155,10 @@ class VpnSwitcher:
 
         # Handle manual country switching
         if next_country:
-            crit = self.settings.connection_criteria
-            if crit.get('main_choice') == 'country' and len(crit.get('country_ids', [])) > 1:
+            if self._handle_sequential_country_switch():
                 print("\n\x1b[36mInfo: Switching to the next country in the sequence...\x1b[0m")
-                if self._handle_sequential_country_switch():
-                    # Force a pool refresh for the new country
-                    self._fetch_and_build_pool()
+                # Force a pool refresh for the new country
+                self._fetch_and_build_pool()
             else:
                 print("\n\x1b[33mWarning: 'next_country=True' was ignored. This feature is only available for the 'country' setting with multiple countries configured.\x1b[0m")
 
@@ -230,7 +228,7 @@ class VpnSwitcher:
             SystemExit: If the user cancels the setup process.
         """
         if not override and os.path.exists(self.settings_path):
-            print(f"\n\x1b[33mLoading existing settings from '{self.settings_path}'...\x1b[0m")
+            print(f"\n\x1b[36mLoading existing settings from '{self.settings_path}'...\x1b[0m")
             return RotationSettings.load(self.settings_path)
 
         exe_path = find_nordvpn_executable()
@@ -278,7 +276,7 @@ class VpnSwitcher:
             NoServersAvailableError: If the specified custom region yields no
                 recommended servers.
         """
-        print("\n\x1b[33mPerforming a one-time check on your custom region...\x1b[0m")
+        print("\n\x1b[36mInfo: Performing a one-time check on your custom region...\x1b[0m")
 
         params = self.api_client._DEFAULT_SERVER_FIELDS.copy()
         params.update({
@@ -295,13 +293,10 @@ class VpnSwitcher:
         if settings.connection_criteria.get('main_choice') == 'custom_region_in':
             for country_id in settings.connection_criteria['country_ids']:
                 if country_counts.get(country_id, 0) == 0:
-                    print(f"\x1b[33mInfo: Country ID {country_id} has no recommended servers.\x1b[0m")
+                    print(f"\x1b[33mWarning: Country ID {country_id} has no recommended servers.\x1b[0m")
 
         if not filtered_recs:
-            raise NoServersAvailableError(
-                "Your custom region has no recommended servers. Please try again using the "
-                "'Randomized by load' strategy."
-            )
+            raise NoServersAvailableError("Your custom region has no recommended servers. Please try again using the 'Randomized by load' strategy.")
         
         target_server = filtered_recs[min(49, len(filtered_recs) - 1)]
         try:
@@ -310,8 +305,7 @@ class VpnSwitcher:
         except ValueError:
             settings.connection_criteria['custom_limit'] = 50
 
-        print(f"\x1b[32mSuccess! Your custom region has {len(filtered_recs)} recommended servers. "
-              f"Optimized limit set to {settings.connection_criteria['custom_limit']}.\x1b[0m")
+        print(f"\x1b[32mSuccess! Your custom region has {len(filtered_recs)} recommended servers.\x1b[0m")
 
     def _prune_cache(self):
         """
@@ -416,6 +410,7 @@ class VpnSwitcher:
         # This correctly detects when we've exhausted a country's list.
         if increase_limit and len(servers) == self._last_raw_server_count:
             if self._handle_sequential_country_switch():
+                print(f"\x1b[36mInfo: Exhausted servers for current country. Switching to next country.\x1b[0m")
                 # Reset the raw server count before the recursive call for the new country.
                 self._last_raw_server_count = -1 
                 return self._fetch_and_build_pool() # Recursive call for new country
@@ -471,10 +466,10 @@ class VpnSwitcher:
             if not self._current_server_pool:
                 # refill logic
                 if self._are_servers_newly_available_from_cache:
-                    print("\x1b[33mServer pool is empty, but newly available servers were found in cache. Refetching...\x1b[0m")
+                    print("\x1b[36mInfo: Server pool is empty, but newly available servers were found in cache. Refetching...\x1b[0m")
                     self._fetch_and_build_pool(increase_limit=False)
                 else:
-                    print("\x1b[33mServer pool is empty. Attempting to fetch more servers...\x1b[0m")
+                    print("\x1b[36mInfo: Server pool is empty. Attempting to fetch more servers...\x1b[0m")
                     self._fetch_and_build_pool(increase_limit=True)
 
             # still empty?
@@ -714,7 +709,6 @@ class VpnSwitcher:
         if crit.get('main_choice') == 'country' and len(crit.get('country_ids', [])) > 1:
             self._current_country_index = (self._current_country_index + 1) % len(crit['country_ids']) # Reset to 0 if at the end
             self._apply_connection_settings() # Reset limit for new country
-            print(f"\x1b[33mExhausted servers for current country. Switching to next country (Index: {self._current_country_index}).\x1b[0m")
             return True
         return False
 

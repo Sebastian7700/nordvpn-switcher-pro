@@ -63,14 +63,14 @@ def prompt_country_id_input(countries: List[Dict]) -> List[int]:
     # Use questionary.text for a robust input prompt
     ids_input = questionary.text(
         "Enter one or more country IDs from the list above, separated by commas:",
-        validate=lambda text: True if text and all(c.isdigit() or c in ', ' for c in text) else "Please enter only numbers and commas.",
+        validate=lambda text: True if text and all(part.strip().isdigit() for part in text.split(",") if part.strip()) else "Please enter only numbers and commas.",
         style=get_custom_style()
     ).ask()
 
     if not ids_input:
         return []
 
-    return [int(i.strip()) for i in ids_input.split(',')]
+    return [int(part.strip()) for part in ids_input.split(",") if part.strip()]
 
 
 def prompt_country_selection_multi(countries: List[Dict]) -> List[int]:
