@@ -76,7 +76,7 @@ During the interactive setup, you'll be asked to define your rotation strategy. 
 
 #### Connection Scope (What to connect to)
 
-| Setting | Description |
+| Scope | Description |
 | :--- | :--- |
 | **Specific Country** | Rotates through servers in one or more specified countries. If multiple countries are given, it will exhaust all servers in the first country before moving to the next. |
 | **Specific Region** | Connects to servers within a broad geographical region, like "The Americas" or "Europe". |
@@ -88,7 +88,65 @@ During the interactive setup, you'll be asked to define your rotation strategy. 
 #### Server Selection Strategy (How to select)
 
 - **Best available (recommended for IP rotation)**: Uses NordVPN's algorithm to find a server with the best combination of low latency (distance from you) and low load. This is ideal for quickly getting a new, high-performance IP.
-- **Randomized by load (recommended for Geo rotation)**: Fetches *all* available servers for your chosen setting, groups them by load (0-20%, 20-30%, 30-40%, etc.), and picks a random server from the lowest-load bucket that still has unused servers. This provides greater server diversity.
+- **Randomized by load (recommended for Geo rotation)**: Fetches *all* available servers for your chosen scope, groups them by load (0-20%, 20-30%, 30-40%, etc.), and picks a random server from the lowest-load bucket that still has unused servers. This provides greater server diversity.
+
+## Visual Setup Examples
+
+Here are a few GIFs demonstrating how to create different rotation strategies using the interactive setup.
+
+<details>
+<summary><strong>Example 1: Specific Countries (Germany & France)</strong></summary>
+
+**Goal:** Create a rotation that uses servers first from Germany, then from France, using the fastest available servers in each.
+
+**Configuration:**
+- **Scope:** Specific Country
+- **Countries:** Germany, France
+- **Strategy:** Best available
+
+![Setup for Germany and France](https://raw.githubusercontent.com/Sebastian7700/nordvpn-switcher-pro/main/assets/setup_country_de_fr.gif)
+
+</details>
+
+<details>
+<summary><strong>Example 2: Custom Region (DACH - Germany, Austria, Switzerland)</strong></summary>
+
+**Goal:** Create a rotation that targets the German-speaking "DACH" region for specific geo-targeting.
+
+**Configuration:**
+- **Scope:** Custom Region (Include)
+- **Countries:** Germany, Austria, Switzerland
+- **Strategy:** Randomized by load (for greater server diversity within the region)
+
+![Setup for DACH region](https://raw.githubusercontent.com/Sebastian7700/nordvpn-switcher-pro/main/assets/setup_custom_region_dach.gif)
+
+</details>
+
+<details>
+<summary><strong>Example 3: Worldwide Random</strong></summary>
+
+**Goal:** Get a random IP address from any standard server in the world.
+
+**Configuration:**
+- **Scope:** Worldwide
+- **Strategy:** Randomized by load
+
+![Setup for Worldwide Random](https://raw.githubusercontent.com/Sebastian7700/nordvpn-switcher-pro/main/assets/setup_worldwide_random.gif)
+
+</details>
+
+<details>
+<summary><strong>Example 4: Special P2P Group</strong></summary>
+
+**Goal:** Connect to NordVPN's optimized P2P server group.
+
+**Configuration:**
+- **Scope:** Special Server Group
+- **Group:** P2P
+
+![Setup for P2P Special Group](https://raw.githubusercontent.com/Sebastian7700/nordvpn-switcher-pro/main/assets/setup_special_p2p.gif)
+
+</details>
 
 ## Advanced Usage
 
@@ -145,11 +203,11 @@ print("\nAll tasks complete.")
 
 ### Manual Rotation Control
 
-If you have selected the **Specific Country** setting, for more fine-grained control, you can manually trigger a switch to the next country in your list using `rotate(next_country=True)`.
+If you have selected the **Specific Country** scope, for more fine-grained control, you can manually trigger a switch to the next country in your list using `rotate(next_country=True)`.
 
 This parameter forces the switcher to advance to the next country in your configured sequence, even if you haven't used all the servers in the current country.
 
-> **Note**: This feature only works if you have configured the switcher with the **Specific Country** setting and provided more than one country ID during setup.
+> **Note**: This feature only works if you have configured the switcher with the **Specific Country** scope and provided more than one country ID during setup.
 
 #### Example: Forcing a Country Switch
 
