@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="nordvpn-switcher-pro",
-    version="1.0.1",
+    version="1.0.2",
     author="Sebastian Hanisch",
     author_email="contact.sebastian.hanisch@gmail.com",
     description="An advanced Python library to automate NordVPN server switching on Windows.",
