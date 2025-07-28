@@ -132,9 +132,3 @@ class WindowsVpnController:
         """Disconnects from the VPN."""
         print("\n\x1b[34mDisconnecting from NordVPN...\x1b[0m")
         self._run_command(["-d"])
-        
-    def get_status(self) -> str:
-        """Gets the current connection status from the CLI."""
-        # This command is lightweight and good for status checks.
-        result = self._run_command(["status"], timeout=10)
-        return result.stdout
