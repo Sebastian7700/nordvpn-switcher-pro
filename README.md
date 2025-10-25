@@ -70,6 +70,9 @@ finally:
     switcher.terminate()
 ```
 
+> Tip: Save your progress in a finally block  
+> NordVPN's CLI can occasionally fail or raise unexpected errors. To avoid losing your work (like scraped data), always wrap your long-running logic in try/finally and save your progress in the finally block.
+
 ## Connection Settings Explained
 
 During the interactive setup, you'll be asked to define your rotation strategy. This involves two choices: **what** to connect to, and **how** servers are selected.
@@ -158,10 +161,12 @@ In this example, we'll simulate downloading region-locked videos from the US and
 
 ```python
 from nordvpn_switcher_pro import VpnSwitcher
+import time
 
 # A dummy function to represent our download logic
 def download_video(video):
     print(f"-> Downloading '{video['title']}'...")
+    time.sleep(5)
 
 # 1. Define the content to download, each with a region attribute.
 videos_to_download = [
@@ -195,7 +200,7 @@ for video in videos_to_download:
 
 # 5. Terminate sessions and save caches
 us_switcher.terminate()
-jp_switcher.terminate()
+jp_switcher.terminate(close_app = True)  # Optionally close NordVPN
 
 print("\nAll tasks complete.")
 
@@ -215,6 +220,7 @@ Imagine you need to process 5 tasks in Germany, then immediately switch to Franc
 
 ```python
 from nordvpn_switcher_pro import VpnSwitcher
+import time
 
 # Assume this switcher was configured with Germany then France.
 switcher = VpnSwitcher(settings_path='de_fr_settings.json')
@@ -225,6 +231,7 @@ try:
     for i in range(5):
         switcher.rotate()
         print(f"Processing Germany task {i+1}...")
+        time.sleep(3)
 
     # --- Manually switch to France for the next set of tasks ---
     print("\nFinished Germany tasks. Forcing switch to next country...")
@@ -235,6 +242,7 @@ try:
         # We don't need next_country=True here anymore
         switcher.rotate()
         print(f"Processing France task {i+1}...")
+        time.sleep(3)
 
 finally:
     switcher.terminate()

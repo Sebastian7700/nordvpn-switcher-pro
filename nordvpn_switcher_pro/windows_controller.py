@@ -151,3 +151,35 @@ class WindowsVpnController:
         """Disconnects from the VPN."""
         print("\n\x1b[34mDisconnecting from NordVPN...\x1b[0m")
         self._run_command(["-d"])
+
+    def close(self, force: bool = False):
+        """
+        Closes the NordVPN process entirely.
+
+        Args:
+            force: If True, kills the process immediately instead of attempting graceful termination.
+        """
+        global _CLI_IS_READY
+        print("\n\x1b[34mClosing NordVPN...\x1b[0m")
+        found = False
+
+        for proc in psutil.process_iter(["name"]):
+            if proc.info["name"] == "NordVPN.exe":
+                found = True
+                try:
+                    if force:
+                        proc.kill()
+                    else:
+                        proc.terminate()
+                    proc.wait(timeout=5)
+                    print("NordVPN.exe closed.")
+                except psutil.TimeoutExpired:
+                    if not force:
+                        print("Process did not exit in time, forcing close.")
+                        proc.kill()
+                except Exception as e:
+                    print(f"Failed to close NordVPN.exe: {e}")
+                _CLI_IS_READY = False
+
+        if not found:
+            print("NordVPN.exe was not running.")

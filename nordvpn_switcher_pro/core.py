@@ -184,7 +184,7 @@ class VpnSwitcher:
         self.settings.used_servers_cache[target_server['id']] = time.time()
         self.settings.save(self.settings_path)
 
-    def terminate(self):
+    def terminate(self, close_app: bool = False):
         """
         Gracefully terminates the VPN rotation session.
 
@@ -193,6 +193,10 @@ class VpnSwitcher:
         1. Disconnects from the current NordVPN server.
         2. Saves the final session state, including the cache of recently used
            servers, to your settings file.
+
+        Args:
+            close_app (bool, optional): If `True`, closes the NordVPN process and
+                its GUI entirely after disconnecting. Defaults to `False`.
         """
         if not self._controller:
             print("\x1b[33mSession was not active. Nothing to terminate.\x1b[0m")
@@ -201,6 +205,8 @@ class VpnSwitcher:
         self._controller.disconnect()
         self.settings.save(self.settings_path)
         self._is_session_active = False
+        if close_app:
+            self._controller.close()
         print(f"\n\x1b[32mSession terminated. Final state saved to '{self.settings_path}'.\x1b[0m")
 
     # --- Private Helper Methods ---
