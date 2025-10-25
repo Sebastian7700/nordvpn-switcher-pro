@@ -144,7 +144,7 @@ class WindowsVpnController:
             is_group: If True, uses the '-g' flag for group connection.
         """
         args = ["-c", "-g", f"{target}"] if is_group else ["-c", "-n", f"{target}"]
-        print(f"\n\x1b[34mConnecting to '{target}'...\x1b[0m")
+        print(f"\x1b[34mConnecting to '{target}'...\x1b[0m")
         self._run_command(args)
 
     def disconnect(self):
@@ -160,7 +160,7 @@ class WindowsVpnController:
             force: If True, kills the process immediately instead of attempting graceful termination.
         """
         global _CLI_IS_READY
-        print("\n\x1b[34mClosing NordVPN...\x1b[0m")
+        print("\x1b[34mClosing NordVPN.exe...\x1b[0m")
         found = False
 
         for proc in psutil.process_iter(["name"]):
@@ -172,14 +172,15 @@ class WindowsVpnController:
                     else:
                         proc.terminate()
                     proc.wait(timeout=5)
-                    print("NordVPN.exe closed.")
+                    print("\x1b[32mNordVPN.exe closed.\x1b[0m")
                 except psutil.TimeoutExpired:
                     if not force:
-                        print("Process did not exit in time, forcing close.")
+                        print("\x1b[33mProcess did not exit in time, forcing close.\x1b[0m")
                         proc.kill()
                 except Exception as e:
-                    print(f"Failed to close NordVPN.exe: {e}")
+                    print(f"\x1b[91mFailed to close NordVPN.exe: {e}\x1b[0m")
                 _CLI_IS_READY = False
 
         if not found:
-            print("NordVPN.exe was not running.")
+            print("\x1b[33mNordVPN.exe was not running.\x1b[0m")
+

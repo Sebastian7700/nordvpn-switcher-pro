@@ -122,9 +122,9 @@ class VpnSwitcher:
 
         if self._current_limit >= 0:
             self._fetch_and_build_pool()
-            print(f"\n\x1b[32mSession started and server pool initialized. Ready to rotate.\x1b[0m")
+            print(f"\x1b[32mSession started and server pool initialized. Ready to rotate.\x1b[0m")
         else:
-            print("\n\x1b[32mSession started in 'special' mode. Ready to rotate.\x1b[0m")
+            print("\x1b[32mSession started in 'special' mode. Ready to rotate.\x1b[0m")
     
     def rotate(self, next_country: bool = False):
         """
@@ -155,16 +155,18 @@ class VpnSwitcher:
         if not self._is_session_active:
             raise ConfigurationError("Session not started. Please call start_session() first.")
 
+        print(f"\n\x1b[34m[{time.strftime('%H:%M:%S', time.localtime())}] Rotation started...\x1b[0m")
+
         self._prune_cache()
 
         # Handle manual country switching
         if next_country:
             if self._handle_sequential_country_switch():
-                print("\n\x1b[36mInfo: Switching to the next country in the sequence...\x1b[0m")
+                print("\x1b[36mInfo: Switching to the next country in the sequence...\x1b[0m")
                 # Force a pool refresh for the new country
                 self._fetch_and_build_pool()
             else:
-                print("\n\x1b[33mWarning: 'next_country=True' was ignored. This feature is only available for the 'country' setting with multiple countries configured.\x1b[0m")
+                print("\x1b[33mWarning: 'next_country=True' was ignored. This feature is only available for the 'country' setting with multiple countries configured.\x1b[0m")
 
         # Handle special server rotation separately
         if self.settings.connection_criteria.get("main_choice") == "special":
@@ -172,7 +174,7 @@ class VpnSwitcher:
             return
         
         if (time.time() - self._pool_timestamp) > self._refresh_interval and self._refresh_interval > 0:
-            print(f"\n\x1b[36mInfo: Server data is older than {self._refresh_interval // 3600}h. Refreshing pool...\x1b[0m")
+            print(f"\x1b[36mInfo: Server data is older than {self._refresh_interval // 3600}h. Refreshing pool...\x1b[0m")
             self._fetch_and_build_pool(increase_limit=False)
             
         target_server = self._get_next_server()
@@ -211,7 +213,7 @@ class VpnSwitcher:
         self._is_session_active = False
         if close_app:
             self._controller.close()
-        print(f"\n\x1b[32mSession terminated. Final state saved to '{self.settings_path}'.\x1b[0m")
+        print(f"\x1b[32mSession terminated. Final state saved to '{self.settings_path}'.\x1b[0m\n")
 
     # --- Private Helper Methods ---
 
@@ -348,7 +350,7 @@ class VpnSwitcher:
             
             pruned_count = initial_cache_size - len(self.settings.used_servers_cache)
             if pruned_count > 0:
-                print(f"\n\x1b[36mInfo: Pruned {pruned_count} expired servers from cache. They are now available for rotation.\x1b[0m")
+                print(f"\x1b[36mInfo: Pruned {pruned_count} expired servers from cache. They are now available for rotation.\x1b[0m")
                 self._are_servers_newly_available_from_cache = True
 
     def _transform_v2_response_to_v1_format(self, response_v2: dict) -> list:
@@ -627,13 +629,13 @@ class VpnSwitcher:
 
     def _apply_connection_settings(self, override: dict = None):
         """
-        Set self._refresh_interval and self._current_limit based on connection criteria.
+        Set `self._refresh_interval` and `self._current_limit` based on connection criteria.
 
         Parameters
         ----------
         override : dict, optional
-            If provided, must contain keys 'refresh_interval' and 'current_limit'. These values
-            will be used directly instead of the defaults. E.g. {'refresh_interval': 6, 'current_limit': 0}
+            If provided, must contain the keys `'refresh_interval'` and `'current_limit'`. These values
+            will be used directly instead of the defaults. E.g. `{'refresh_interval': 6, 'current_limit': 0}`
 
         Connection Criteria Table
         -------------------------
@@ -656,10 +658,10 @@ class VpnSwitcher:
         - **recommended**: Fetch a low number of servers (`limit > 0`) since the first entries
           returned are already the best. We refresh these more frequently (shorter interval)
           because fetching is cheap and users expect top-performing servers.
-        - **randomized_load**: Must fetch all available entries (`limit=0`) to randomize them
+        - **randomized_load**: Must fetch all available entries (`limit = 0`) to randomize them
           properly. We refresh less often (longer interval) because this returns many candidates;
           before connecting, we still check live load to ensure it's low.
-        - refresh=0 means never refresh; limit=0 means fetch all available servers; limit=-1 means fetch no servers.
+        - `refresh=0` means never refresh; `limit=0` means fetch all available servers; `limit=-1` means fetch no servers.
 
         """
         # Shortcut override
@@ -834,7 +836,8 @@ class VpnSwitcher:
                 continue
 
             if new_ip and new_ip != self._last_known_ip and new_ip_info.get("protected"):
-                print(f"\n\x1b[32mRotation successful! Connected to '{target_name}'. New IP: {new_ip}\x1b[0m")
+                print(f"\x1b[32m[{time.strftime('%H:%M:%S', time.localtime())}] Rotation successful!\x1b[0m")
+                print(f"\x1b[32mConnected to '{target_name}'. New IP: {new_ip}\x1b[0m")
                 self._last_known_ip = new_ip
                 return # Success!
             
