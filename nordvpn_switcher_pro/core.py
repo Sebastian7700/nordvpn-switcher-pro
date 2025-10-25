@@ -17,7 +17,7 @@ class VpnSwitcher:
     rotating connections, and terminating the session gracefully.
     """
 
-    def __init__(self, settings_path: str = "nordvpn_settings.json", override: bool = False, cache_expiry_hours: int = 24):
+    def __init__(self, settings_path: str = "nordvpn_settings.json", override: bool = False, cache_expiry_hours: int = 24, custom_exe_path: str = None):
         """
         Creates a VpnSwitcher to automate NordVPN server connections.
 
@@ -63,11 +63,15 @@ class VpnSwitcher:
             cache_expiry_hours (int, optional): The number of hours a server is
                 considered "recently used". After this period, it becomes
                 available for connection again. Defaults to 24.
+            custom_exe_path (str, optional): A custom path to the NordVPN
+                executable. If provided, this path is used instead of attempting
+                to find it automatically. (Use if NordVPN is installed in a
+                non-standard location.)
         """
         self.settings_path = settings_path
         self.api_client = NordVpnApiClient()
-        self.settings = self._load_or_create_settings(override, cache_expiry_hours)
-        
+        self.settings = self._load_or_create_settings(override, cache_expiry_hours, custom_exe_path)
+
         # --- Instance variables for an active session ---
         self._controller: WindowsVpnController | None = None
         self._session_coordinates: Dict | None = None
@@ -211,7 +215,7 @@ class VpnSwitcher:
 
     # --- Private Helper Methods ---
 
-    def _load_or_create_settings(self, override: bool, cache_expiry_hours: int) -> RotationSettings:
+    def _load_or_create_settings(self, override: bool, cache_expiry_hours: int, custom_exe_path: str = None) -> RotationSettings:
         """
         Loads settings from a file or creates new ones via an interactive setup.
 
@@ -224,6 +228,9 @@ class VpnSwitcher:
                 if a settings file exists.
             cache_expiry_hours (int): The number of hours to use for the server
                 cache expiry if a new configuration is created.
+            custom_exe_path (str, optional): A custom path to the NordVPN
+                executable. If provided, this path is used instead of attempting
+                to find it automatically.
 
         Returns:
             RotationSettings: An instance of the settings class, either loaded
@@ -237,7 +244,11 @@ class VpnSwitcher:
             print(f"\n\x1b[36mLoading existing settings from '{self.settings_path}'...\x1b[0m")
             return RotationSettings.load(self.settings_path)
 
-        exe_path = find_nordvpn_executable()
+        # If a custom path is provided, use it; otherwise, try to find automatically
+        if custom_exe_path and os.path.exists(custom_exe_path):
+            exe_path = custom_exe_path
+        else:
+            exe_path = find_nordvpn_executable()
         try:
             criteria = ui.get_user_criteria(self.api_client)
         except SystemExit as e:
@@ -246,16 +257,16 @@ class VpnSwitcher:
         except Exception as e:
             # Catch other errors and provide context
             raise ConfigurationError(f"Failed to create configuration: {e}")
-            
+
         settings = RotationSettings(
             exe_path=exe_path,
             connection_criteria=criteria,
             cache_expiry_seconds=cache_expiry_hours * 3600
         )
-        
+
         if criteria.get('main_choice', '').startswith('custom_region') and criteria.get('strategy') == 'recommended':
             self._preflight_check_custom_region(settings)
-            
+
         settings.save(self.settings_path)
         print(f"\n\x1b[32mSettings saved to '{self.settings_path}'.\x1b[0m")
         return settings

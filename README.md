@@ -153,6 +153,19 @@ Here are a few GIFs demonstrating how to create different rotation strategies us
 
 ## Advanced Usage
 
+<details>
+<summary><strong>Tip: Custom NordVPN Executable Path</strong></summary>
+
+If NordVPN is installed in a non-standard location, you can specify the path to the executable using the `custom_exe_path` argument:
+
+```python
+switcher = VpnSwitcher(custom_exe_path="C:/Path/To/NordVPN.exe")
+```
+
+This is optional and only needed if auto-detection fails. The path will be saved to your `nordvpn_settings.json` file.
+
+</details>
+
 ### Multiple Rotation Strategies
 
 You can maintain multiple, independent rotation strategies by creating different `VpnSwitcher` instances, each with its own settings file. This is useful for complex workflows that require different geographic targets.

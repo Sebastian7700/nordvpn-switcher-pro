@@ -31,8 +31,8 @@ def find_nordvpn_executable() -> str:
             return path
 
     raise ConfigurationError(
-        "Could not find NordVPN.exe. Please ensure NordVPN is installed "
-        "in a standard directory."
+        "Could not find NordVPN.exe. Please install NordVPN in a standard directory "
+        "or provide the correct path in VpnSwitcher(custom_exe_path='C:/Path/To/NordVPN.exe')."
     )
 
 
