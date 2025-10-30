@@ -1,6 +1,7 @@
 from typing import Dict, List, Any
 
 import requests
+from fake_useragent import UserAgent
 
 from .exceptions import ApiClientError
 
@@ -8,7 +9,6 @@ from .exceptions import ApiClientError
 class NordVpnApiClient:
     """A client for interacting with the public NordVPN API."""
     
-    _HEADERS = {"User-Agent": "NordVPN-Switcher-Pro-Python/1.0"}
     _DEFAULT_SERVER_FIELDS = {
         "fields[servers.id]": "",
         "fields[servers.name]": "",
@@ -18,9 +18,12 @@ class NordVpnApiClient:
         "fields[servers.locations.country.name]": ""
     }
 
-    def __init__(self):
+    def __init__(self, os_name: str = None):
         self.session = requests.Session()
-        self.session.headers.update(self._HEADERS)
+        if os_name:
+            self.session.headers.update({"User-Agent": UserAgent(os=os_name).random})
+        else:
+            self.session.headers.update({"User-Agent": UserAgent().random})
 
     def _get(self, url: str, params: Dict = None) -> Any:
         """

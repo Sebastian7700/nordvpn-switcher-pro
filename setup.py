@@ -16,6 +16,7 @@ setup(
     install_requires=[
         "requests>=2.20.0",
         "questionary>=1.10.0",
+        "fake-useragent>=1.2.0",
     ],
     classifiers=[
         # How mature is this project? Common values are

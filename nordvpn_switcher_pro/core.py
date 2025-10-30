@@ -1,6 +1,7 @@
 import os
 import random
 import time
+import platform as _platform
 from typing import Dict, List, Tuple
 
 from . import ui
@@ -69,11 +70,31 @@ class VpnSwitcher:
                 non-standard location.)
         """
         self.settings_path = settings_path
-        self.api_client = NordVpnApiClient()
+        # Detect platform for fake-useragent restriction and controller setup
+        _os = _platform.system()
+        _message = "If you'd like to contribute, please visit 'https://github.com/Sebastian7700/nordvpn-switcher-pro'!"
+        match _os:
+            case "Windows":
+                fakeua_os = "Windows"
+                controller_type = WindowsVpnController
+            case "Linux":
+                fakeua_os = "Linux"
+                controller_type = None
+                print(f"[nordvpn-switcher-pro] Linux is not yet supported. {_message}")
+            case "Darwin":
+                fakeua_os = "Mac OS X"
+                controller_type = None
+                print(f"[nordvpn-switcher-pro] Mac OS X is not yet supported. {_message}")
+            case _:
+                fakeua_os = None
+                controller_type = None
+                print(f"[nordvpn-switcher-pro] Platform '{_os}' is not supported. {_message}")
+        self.api_client = NordVpnApiClient(fakeua_os)
         self.settings = self._load_or_create_settings(override, cache_expiry_hours, custom_exe_path)
 
         # --- Instance variables for an active session ---
-        self._controller: WindowsVpnController | None = None
+        self._controller_type: type[WindowsVpnController] | None = controller_type  # Store the controller class for later instantiation
+        self._controller: WindowsVpnController | None = None  # Will be initialized when session starts
         self._session_coordinates: Dict | None = None
         self._last_known_ip: str | None = None
         self._current_server_pool: List[Dict] = []
@@ -102,8 +123,11 @@ class VpnSwitcher:
         print("\n\x1b[1m\x1b[36m--- Starting VPN Session ---\x1b[0m")
         
         self._is_session_active = True
-        self._controller = WindowsVpnController(self.settings.exe_path)
-        self._controller.disconnect()
+        if self._controller_type:
+            self._controller = self._controller_type(self.settings.exe_path)
+            self._controller.disconnect()
+        else:
+            raise ConfigurationError("No VPN controller available for your platform")
         
         print("\x1b[33mWaiting 3s for network adapter to settle...\x1b[0m")
         time.sleep(3)
