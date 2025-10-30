@@ -60,17 +60,42 @@ def prompt_country_id_input(countries: List[Dict]) -> List[int]:
     print("-" * len(header))
     print("\n\x1b[33mServers will be rotated through each country sequentially (e.g., all of Germany, then all of France).\x1b[0m\n")
 
-    # Use questionary.text for a robust input prompt
+    # Build lookup dictionaries for fast validation
+    id_to_country = {str(c['id']): c for c in countries}
+    name_to_id = {c['name'].lower(): c['id'] for c in countries}
+
+    def validate_input(text):
+        if not text:
+            return "Please enter at least one country ID or name."
+        parts = [part.strip() for part in text.split(",") if part.strip()]
+        unrecognized = []
+        for part in parts:
+            if part.isdigit():
+                if part not in id_to_country:
+                    unrecognized.append(part)
+            else:
+                if part.lower() not in name_to_id:
+                    unrecognized.append(part)
+        if unrecognized:
+            return f"Unrecognized: {', '.join(unrecognized)}. Please check spelling or use valid IDs/names."
+        return True
+
     ids_input = questionary.text(
-        "Enter one or more country IDs from the list above, separated by commas:",
-        validate=lambda text: True if text and all(part.strip().isdigit() for part in text.split(",") if part.strip()) else "Please enter only numbers and commas.",
+        "Enter one or more country IDs or names from the list above, separated by commas:",
+        validate=validate_input,
         style=get_custom_style()
     ).ask()
 
     if not ids_input:
         return []
 
-    return [int(part.strip()) for part in ids_input.split(",") if part.strip()]
+    result_ids = []
+    for part in [p.strip() for p in ids_input.split(",") if p.strip()]:
+        if part.isdigit():
+            result_ids.append(int(part))
+        else:
+            result_ids.append(name_to_id[part.lower()])
+    return result_ids
 
 
 def prompt_country_selection_multi(countries: List[Dict]) -> List[int]:
