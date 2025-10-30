@@ -109,31 +109,56 @@ class WindowsVpnController:
         )
 
     def _run_command(self, args: List[str], timeout: int = 60) -> subprocess.CompletedProcess:
-        """Executes a NordVPN CLI command after ensuring readiness."""
+        """
+        Executes a NordVPN CLI command after ensuring readiness.
+        Uses Popen with controlled waiting to avoid DNS/routing issues
+        caused by overlapping service reconfiguration.
+
+        Args:
+            args: List of CLI arguments (e.g. ["-c", "-n", "Germany #741"])
+            timeout: Max time (seconds) to wait for command stabilization.
+        Returns:
+            subprocess.CompletedProcess-like object with stdout/stderr.
+        Raises:
+            ConfigurationError, NordVpnCliError
+        """
         self._wait_for_cli_ready()
 
-        command = [self.exe_path] + args
-        # print(f"\n\x1b[34mRunning NordVPN CLI command: {' '.join(command)}\x1b[0m")
+        command = f'"{self.exe_path}" {" ".join(args)}'
+        # print(f"\n\x1b[34mRunning NordVPN CLI command: {command}\x1b[0m")
+
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 command,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                shell=True,                    # run in shell context (ensures env consistency)
                 cwd=self.cwd_path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
-            return result
+
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                raise NordVpnCliError(f"NordVPN CLI command timed out after {timeout} seconds.")
+
+            if process.returncode != 0:
+                error_message = stderr.strip() or stdout.strip()
+                raise NordVpnCliError(
+                    f"NordVPN CLI command '{command}' failed.\nError: {error_message}"
+                )
+
+            # Return consistent result object
+            return subprocess.CompletedProcess(
+                args=command, returncode=process.returncode, stdout=stdout, stderr=stderr
+            )
+
         except FileNotFoundError:
             raise ConfigurationError(f"Executable not found at path: {self.exe_path}")
-        except subprocess.CalledProcessError as e:
-            error_message = e.stderr.strip() if e.stderr else e.stdout.strip()
-            raise NordVpnCliError(
-                f"NordVPN CLI command '{' '.join(command)}' failed.\nError: {error_message}"
-            )
-        except subprocess.TimeoutExpired:
-            raise NordVpnCliError(f"NordVPN CLI command timed out after {timeout} seconds.")
+        except Exception as e:
+            raise NordVpnCliError(f"Unexpected error while running '{command}': {e}")
 
     def connect(self, target: str, is_group: bool = False):
         """
