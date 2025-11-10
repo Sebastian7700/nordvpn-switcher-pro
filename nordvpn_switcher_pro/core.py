@@ -105,6 +105,7 @@ class VpnSwitcher:
         self._is_session_active: bool = False
         self._are_servers_newly_available_from_cache: bool = False
         self._refresh_interval: int = 3600
+        self._session_connections: int = 0  # Track number of successful connections in session
     
     def start_session(self):
         """
@@ -149,13 +150,14 @@ class VpnSwitcher:
             print(f"\x1b[32mSession started and server pool initialized. Ready to rotate.\x1b[0m")
         else:
             print("\x1b[32mSession started in 'special' mode. Ready to rotate.\x1b[0m")
+        self._session_connections = 0  # Reset connection count at session start
     
-    def rotate(self, next_country: bool = False):
+    def rotate(self, next_location: bool = False):
         """
         Connects to a new NordVPN server based on the configured settings.
 
         This is the primary action method. It selects a new server that matches
-        the criteria defined during setup (e.g., specific country, server type)
+        the criteria defined during setup (e.g., specific country, city, server type)
         and connects to it. It ensures the new server has not been used recently,
         unless no other servers are available.
 
@@ -163,11 +165,12 @@ class VpnSwitcher:
             `start_session()` must be called before using this method.
 
         Args:
-            next_country (bool, optional): If `True`, forces the switcher to
-                move to the next country in the sequence, even if the current
-                country's server pool is not exhausted. This parameter only has
-                an effect if the connection setting was set to 'country' with
-                multiple countries configured. Defaults to `False`.
+            next_location (bool, optional): If `True`, forces the switcher to
+                move to the next country or city in the sequence, even if the current
+                pool is not exhausted. This only works if at least one connection
+                was made during the session; otherwise, the first country/city is not skipped.
+                This parameter only has an effect if the connection setting was set to 'country' or 'city'
+                with multiple countries/cities configured. Defaults to `False`.
 
         Raises:
             ConfigurationError: If the session has not been started.
@@ -183,14 +186,19 @@ class VpnSwitcher:
 
         self._prune_cache()
 
-        # Handle manual country switching
-        if next_country:
-            if self._handle_sequential_country_switch():
-                print("\x1b[36mInfo: Switching to the next country in the sequence...\x1b[0m")
-                # Force a pool refresh for the new country
-                self._fetch_and_build_pool()
+        # Handle manual switching
+        if next_location:
+            # Only allow next_location/city switch if at least one connection was made in this session
+            if self._session_connections > 0:
+                switch_result = self._handle_sequential_country_switch()
+                if switch_result in ['country', 'city']:
+                    print(f"\x1b[36mInfo: Switching to the next {switch_result} in the sequence...\x1b[0m")
+                    # Force a pool refresh for the new location
+                    self._fetch_and_build_pool()
+                else:
+                    print("\x1b[33mWarning: 'next_location=True' was ignored. This feature is only available for the 'country' or 'city' setting with multiple countries/cities configured.\x1b[0m")
             else:
-                print("\x1b[33mWarning: 'next_country=True' was ignored. This feature is only available for the 'country' setting with multiple countries configured.\x1b[0m")
+                print("\x1b[33mInfo: 'next_location=True' ignored because no connection has been made yet in this session.\x1b[0m")
 
         # Handle special server rotation separately
         if self.settings.connection_criteria.get("main_choice") == "special":
@@ -215,6 +223,7 @@ class VpnSwitcher:
         try:
             self._controller.connect(target_server['name'])
             self._verify_connection(logging_name)
+            self._session_connections += 1
         except NordVpnConnectionError as e:
             ui.display_critical_error(str(e))
             raise # Re-raise the exception after informing the user
@@ -494,11 +503,12 @@ class VpnSwitcher:
         # Check if the API returned the same number of servers as last time.
         # This correctly detects when we've exhausted a country's list.
         if increase_limit and len(servers) == self._last_raw_server_count:
-            if self._handle_sequential_country_switch():
-                print(f"\x1b[36mInfo: Exhausted servers for current country. Switching to next country.\x1b[0m")
-                # Reset the raw server count before the recursive call for the new country.
+            switch_result = self._handle_sequential_country_switch()
+            if switch_result in ['country', 'city']:
+                print(f"\x1b[36mInfo: Exhausted servers for current {switch_result}. Switching to next {switch_result}.\x1b[0m")
+                # Reset the raw server count before the recursive call for the new location
                 self._last_raw_server_count = -1 
-                return self._fetch_and_build_pool() # Recursive call for new country
+                return self._fetch_and_build_pool() # Recursive call for new location
             else:
                 self._current_server_pool = [] # Truly exhausted
                 return
@@ -820,20 +830,26 @@ class VpnSwitcher:
         if self._current_limit >= 3000:
             self._current_limit = 0
     
-    def _handle_sequential_country_switch(self) -> bool:
-        """Switches to the next country (or city) in a sequential rotation. Returns True if switched."""
+    def _handle_sequential_country_switch(self) -> str | bool:
+        """
+        Switches to the next country or city in a sequential rotation.
+
+        Returns:
+            Union[str, bool]: Returns 'country' if switched to next country,
+            'city' if switched to next city, or False if no switch occurred.
+        """
         crit = self.settings.connection_criteria
         scope = crit.get('main_choice')
 
         if scope == 'country' and len(crit.get('country_ids', [])) > 1:
             self._current_country_index = (self._current_country_index + 1) % len(crit['country_ids'])
             self._apply_connection_settings()
-            return True
+            return 'country'
 
         if scope == 'city' and len(crit.get('city_ids', [])) > 1:
             self._current_country_index = (self._current_country_index + 1) % len(crit['city_ids'])
             self._apply_connection_settings()
-            return True
+            return 'city'
 
         return False
 

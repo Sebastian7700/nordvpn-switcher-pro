@@ -18,7 +18,7 @@ The core focus is providing robust control over the NordVPN client. It does not 
 ## Key Features
 
 - **Interactive Setup**: A guided command-line interface to create your connection settings.
-- **Criteria-Based Rotation**: Connect to servers by Country, Region, a custom list of countries (inclusion or exclusion), or special groups (e.g., P2P, Double VPN).
+- **Criteria-Based Rotation**: Connect to servers by Country, City, Region, a custom list of countries (inclusion or exclusion), or special groups (e.g., P2P, Double VPN).
 - **Smart Caching**: Remembers recently used servers and avoids them for a configurable duration (default: 24 hours).
 - **Resilient**: Gracefully handles connection failures and automatically falls back to the least-recently-used server if all fresh options are exhausted.
 - **Headless Operation**: After the initial setup, it runs without any prompts, making it perfect for automated scripts and servers.
@@ -82,16 +82,18 @@ During the interactive setup, you'll be asked to define your rotation strategy. 
 | Scope | Description |
 | :--- | :--- |
 | **Specific Country** | Rotates through servers in one or more specified countries. If multiple countries are given, it will exhaust all servers in the first country before moving to the next. |
+| **Specific City** | Rotates through servers in one or more specified cities. If multiple cities are given, it will exhaust all servers in the first city before moving to the next. Useful for finer geographic targeting within a country. |
 | **Specific Region** | Connects to servers within a broad geographical region, like "The Americas" or "Europe". |
 | **Custom Region (Include)** | Rotates only through servers in a custom list of countries you select. Ideal for targeting specific markets. |
 | **Custom Region (Exclude)** | Rotates through servers in any country *except* for those in a custom list you provide. |
+| **Custom Region (City)** | Rotates only through servers in a custom list of cities you select. Use this when you need a specific set of cities rather than whole countries. |
 | **Worldwide** | Connects to any standard NordVPN server across the globe. |
 | **Special Server Group** | Connects to a specific group like P2P, Double VPN, or Obfuscated. Since the app chooses the server, the switcher can be configured to retry if it gets a recently used IP. |
 
 #### Server Selection Strategy (How to select)
 
 - **Best available (recommended for IP rotation)**: Uses NordVPN's algorithm to find a server with the best combination of low latency (distance from you) and low load. This is ideal for quickly getting a new, high-performance IP.
-- **Randomized by load (recommended for Geo rotation)**: Fetches *all* available servers for your chosen scope, groups them by load (0-20%, 20-30%, 30-40%, etc.), and picks a random server from the lowest-load bucket that still has unused servers. This provides greater server diversity.
+- **Randomized by load (recommended for Geo rotation)**: Fetches *all* available servers for your chosen scope, groups them by load (0-20%, 20-30%, 30-40%, etc.), and picks a random server from the lowest-load bucket that is still unused. This provides greater server diversity.
 
 ## Visual Setup Examples
 
@@ -221,11 +223,11 @@ print("\nAll tasks complete.")
 
 ### Manual Rotation Control
 
-If you have selected the **Specific Country** scope, for more fine-grained control, you can manually trigger a switch to the next country in your list using `rotate(next_country=True)`.
+If you have selected the **Specific Country** or **Specific City** scope, for more fine-grained control you can manually trigger a switch to the next configured location (country or city) using `rotate(next_location=True)`.
 
-This parameter forces the switcher to advance to the next country in your configured sequence, even if you haven't used all the servers in the current country.
+This parameter forces the switcher to advance to the next country or city in your configured sequence, even if you haven't used all the servers in the current location.
 
-> **Note**: This feature only works if you have configured the switcher with the **Specific Country** scope and provided more than one country ID during setup.
+> **Note**: This feature only works if you have configured the switcher with the **Specific Country** or **Specific City** scope and provided more than one location ID during setup.
 
 #### Example: Forcing a Country Switch
 
@@ -248,11 +250,11 @@ try:
 
     # --- Manually switch to France for the next set of tasks ---
     print("\nFinished Germany tasks. Forcing switch to next country...")
-    switcher.rotate(next_country=True)
+    switcher.rotate(next_location=True)
     
     # --- Process France Tasks ---
     for i in range(5):
-        # We don't need next_country=True here anymore
+        # We don't need next_location=True here anymore
         switcher.rotate()
         print(f"Processing France task {i+1}...")
         time.sleep(3)
