@@ -18,7 +18,7 @@ class VpnSwitcher:
     rotating connections, and terminating the session gracefully.
     """
 
-    def __init__(self, settings_path: str = "nordvpn_settings.json", override: bool = False, cache_expiry_hours: int = 24, custom_exe_path: str = None):
+    def __init__(self, settings_path: str = "nordvpn_settings.json", force_setup: bool = False, cache_expiry_hours: int = 24, custom_exe_path: str = None):
         """
         Creates a VpnSwitcher to automate NordVPN server connections.
 
@@ -59,7 +59,7 @@ class VpnSwitcher:
             settings_path (str, optional): The path to the JSON file for
                 loading and saving your rotation preferences and server cache.
                 Defaults to "nordvpn_settings.json".
-            override (bool, optional): If `True`, forces the interactive setup
+            force_setup (bool, optional): If `True`, forces the interactive setup
                 to run, overwriting any existing settings file. Defaults to `False`.
             cache_expiry_hours (int, optional): The number of hours a server is
                 considered "recently used". After this period, it becomes
@@ -90,7 +90,7 @@ class VpnSwitcher:
                 controller_type = None
                 print(f"[nordvpn-switcher-pro] Platform '{_os}' is not supported. {_message}")
         self.api_client = NordVpnApiClient(fakeua_os)
-        self.settings = self._load_or_create_settings(override, cache_expiry_hours, custom_exe_path)
+        self.settings = self._load_or_create_settings(force_setup, cache_expiry_hours, custom_exe_path)
 
         # --- Instance variables for an active session ---
         self._controller_type: type[WindowsVpnController] | None = controller_type  # Store the controller class for later instantiation
@@ -250,16 +250,16 @@ class VpnSwitcher:
 
     # --- Private Helper Methods ---
 
-    def _load_or_create_settings(self, override: bool, cache_expiry_hours: int, custom_exe_path: str = None) -> RotationSettings:
+    def _load_or_create_settings(self, force_setup: bool, cache_expiry_hours: int, custom_exe_path: str = None) -> RotationSettings:
         """
         Loads settings from a file or creates new ones via an interactive setup.
 
-        If a settings file exists at `self.settings_path` and `override` is False,
+        If a settings file exists at `self.settings_path` and `force_setup` is False,
         it loads the settings from that file. Otherwise, it launches the
         interactive UI to guide the user through creating a new configuration.
 
         Args:
-            override (bool): If True, forces the interactive setup to run even
+            force_setup (bool): If True, forces the interactive setup to run even
                 if a settings file exists.
             cache_expiry_hours (int): The number of hours to use for the server
                 cache expiry if a new configuration is created.
@@ -275,7 +275,7 @@ class VpnSwitcher:
             ConfigurationError: If the user-guided setup fails.
             SystemExit: If the user cancels the setup process.
         """
-        if not override and os.path.exists(self.settings_path):
+        if not force_setup and os.path.exists(self.settings_path):
             print(f"\n\x1b[36mLoading existing settings from '{self.settings_path}'...\x1b[0m")
             return RotationSettings.load(self.settings_path)
 
