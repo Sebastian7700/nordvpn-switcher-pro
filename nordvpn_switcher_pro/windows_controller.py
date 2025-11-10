@@ -124,7 +124,12 @@ class WindowsVpnController:
         """
         self._wait_for_cli_ready()
 
-        command = f'"{self.exe_path}" {" ".join(args)}'
+        # Quote each argument that contains spaces or special characters
+        quoted_args = [
+            f'"{a}"' if (" " in a or "#" in a or "&" in a) else a
+            for a in args
+        ]
+        command = f'"{self.exe_path}" {" ".join(quoted_args)}'
         # print(f"\n\x1b[34mRunning NordVPN CLI command: {command}\x1b[0m")
 
         try:
