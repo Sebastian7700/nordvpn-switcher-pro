@@ -14,8 +14,7 @@ class NordVpnApiClient:
         "fields[servers.name]": "",
         "fields[servers.load]": "",
         "fields[servers.locations.id]": "",
-        "fields[servers.locations.country.id]": "",
-        "fields[servers.locations.country.name]": ""
+        "fields[servers.locations.country.id]": ""
     }
 
     def __init__(self, os_name: str = None):
@@ -90,5 +89,6 @@ class NordVpnApiClient:
         params.update({
             "filters[servers.id]": server_id,
             "fields[servers.status]": "",
+            "fields[servers.locations.country.city.name]": "",
         })
         return self._get(url, params=params)

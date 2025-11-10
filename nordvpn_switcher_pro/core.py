@@ -203,9 +203,18 @@ class VpnSwitcher:
             
         target_server = self._get_next_server()
 
+        logging_name = f"'{target_server['name']}'"
+        if target_server.get('locations'):
+            for loc in target_server['locations']:
+                country_info = loc.get('country', {})
+                city_info = country_info.get('city', {})
+                if city_info and 'name' in city_info:
+                    logging_name += f" ({city_info['name']})"
+                    break
+
         try:
             self._controller.connect(target_server['name'])
-            self._verify_connection(target_server['name'])
+            self._verify_connection(logging_name)
         except NordVpnConnectionError as e:
             ui.display_critical_error(str(e))
             raise # Re-raise the exception after informing the user
@@ -328,17 +337,31 @@ class VpnSwitcher:
             "filters[servers_technologies][id]": 35,
             "filters[servers_technologies][pivot][status]": "online",
         })
-        
-        all_recs = self.api_client.get_recommendations(params)
-        
-        filtered_recs, country_counts = self._filter_servers_by_custom_region(all_recs, settings, counting=True)
 
+        # If we're validating a custom city-based region, request city fields from the API
+        if settings.connection_criteria.get('main_choice') == 'custom_region_city':
+            params.update({
+                "fields[servers.locations.country.city.id]": ""
+            })
+
+        all_recs = self.api_client.get_recommendations(params)
+
+        filtered_recs, id_counts = self._filter_servers_by_custom_region(all_recs, settings, counting=True)
+
+        # If the user created an inclusion custom region, warn about any empty entries
         if settings.connection_criteria.get('main_choice') == 'custom_region_in':
-            for country_id in settings.connection_criteria['country_ids']:
-                if country_counts.get(country_id, 0) == 0:
+            for country_id in settings.connection_criteria.get('country_ids', []):
+                if id_counts.get(country_id, 0) == 0:
                     print(f"\x1b[33mWarning: Country ID {country_id} has no recommended servers.\x1b[0m")
 
+        # If the user created a custom city region, check by city ids
+        if settings.connection_criteria.get('main_choice') == 'custom_region_city':
+            for city_id in settings.connection_criteria.get('city_ids', []):
+                if id_counts.get(city_id, 0) == 0:
+                    print(f"\x1b[33mWarning: City ID {city_id} has no recommended servers.\x1b[0m")
+
         if not filtered_recs:
+            print("\x1b[33mWarning: Your custom region has no servers recommended by the NordVPN algorithm. Please try again using the 'Randomized by load' strategy.\x1b[0m")
             raise NoServersAvailableError("Your custom region has no recommended servers. Please try again using the 'Randomized by load' strategy.")
         
         target_server = filtered_recs[min(49, len(filtered_recs) - 1)]
@@ -385,11 +408,17 @@ class VpnSwitcher:
         lookup map for locations and then reconstructs the server list with
         embedded location data, matching the v1 structure.
 
+        The v2 API response may include city information if the appropriate fields
+        were requested. This method preserves that city data in the transformed
+        structure to support city-based filtering.
+
         Args:
             response_v2: The dictionary response from the get_servers_v2 API call.
 
         Returns:
-            A list of server dictionaries in the v1 format.
+            A list of server dictionaries in the v1 format. The 'locations' field
+            contains location objects with nested country and city data matching
+            the v1 structure used by filtering functions.
         """
         if not response_v2 or 'servers' not in response_v2 or 'locations' not in response_v2:
             return []
@@ -403,18 +432,31 @@ class VpnSwitcher:
             # For each server, find its full location objects using the lookup map.
             # Use a list comprehension for a concise and Pythonic way to build the list.
             # The `if loc_id in locations_by_id` check adds robustness.
-            server_locations = [
-                locations_by_id[loc_id] 
-                for loc_id in server_data.get('location_ids', []) 
-                if loc_id in locations_by_id
-            ]
+            server_locations = []
+            for loc_id in server_data.get('location_ids', []):
+                if loc_id not in locations_by_id:
+                    continue
+                    
+                location = locations_by_id[loc_id].copy()
+                
+                # Ensure city data is properly nested under country if present
+                if 'country' in location and 'city' in location['country']:
+                    city_data = location['country']['city']
+                    if isinstance(city_data, dict) and 'id' in city_data:
+                        # City data is already properly structured
+                        server_locations.append(location)
+                        continue
+                
+                # If no proper city data, ensure at least country data is preserved
+                if 'country' in location:
+                    server_locations.append(location)
             
             # Construct the new server dictionary in the v1 format.
             transformed_servers.append({
                 'id': server_data.get('id'),
                 'name': server_data.get('name'),
                 'load': server_data.get('load'),
-                'locations': server_locations,  # This now matches the v1 structure
+                'locations': server_locations,  # Now includes properly nested city data
             })
             
         return transformed_servers
@@ -552,14 +594,28 @@ class VpnSwitcher:
             "filters[servers_technologies][id]": 35,
             "filters[servers_technologies][pivot][status]": "online",
         })
-        
-        if main_choice == "country":
-            params["filters[country_id]"] = crit["country_ids"][self._current_country_index]
-            params["filters[servers_groups][id]"] = 11
-        elif main_choice == "region":
-            params["filters[servers_groups][id]"] = crit["group_id"]
-        elif main_choice in ["worldwide", "custom_region_in", "custom_region_ex"]:
-            params["filters[servers_groups][id]"] = 11
+
+        match main_choice:
+            case "country":
+                params["filters[country_id]"] = crit["country_ids"][self._current_country_index]
+                params["filters[servers_groups][id]"] = 11
+
+            case "city":
+                params["filters[country_city_id]"] = crit["city_ids"][self._current_country_index]
+                params["filters[servers_groups][id]"] = 11
+
+            case "region":
+                params["filters[servers_groups][id]"] = crit["group_id"]
+
+            case "custom_region_city":
+                params["filters[servers_groups][id]"] = 11
+                params["fields[servers.locations.country.city.id]"] = ""
+
+            case m if m in ["worldwide", "custom_region_in", "custom_region_ex"]:
+                params["filters[servers_groups][id]"] = 11
+
+            case _:
+                pass
 
         if crit.get('strategy') == 'recommended':
             params["coordinates[latitude]"] = self._session_coordinates["latitude"]
@@ -626,30 +682,44 @@ class VpnSwitcher:
                   (only populated if `counting` is True).
         """
         crit = settings.connection_criteria
-        custom_ids = crit['country_ids']
         exclude = crit['main_choice'] == "custom_region_ex"
-        
+        is_city_mode = crit['main_choice'] == 'custom_region_city'
+
+        # custom_ids can be either country_ids or city_ids depending on mode
+        custom_ids = crit['city_ids'] if is_city_mode else crit['country_ids']
+
         result_servers = []
-        country_counts = {}
+        counts = {}
 
         for server in servers:
             # This logic assumes v1 server structure for location.
-            country_id = server['locations'][0].get('country', {}).get('id')
-            if country_id is None: continue
+            loc = server.get('locations', [None])[0]
+            if not loc:
+                continue
+
+            if is_city_mode:
+                # city id is nested under country -> city
+                city_id = loc.get('country', {}).get('city', {}).get('id')
+                if city_id is None:
+                    continue
+
+                key = city_id
+            else:
+                country_id = loc.get('country', {}).get('id')
+                if country_id is None:
+                    continue
+
+                key = country_id
 
             if counting:
-                if country_id in country_counts:
-                    country_counts[country_id] += 1
-                else:
-                    country_counts[country_id] = 1
+                counts[key] = counts.get(key, 0) + 1
 
-            if (exclude and country_id in custom_ids) or \
-               (not exclude and country_id not in custom_ids):
+            if (exclude and key in custom_ids) or (not exclude and key not in custom_ids):
                 continue
-            
+
             result_servers.append(server)
-            
-        return result_servers, country_counts
+
+        return result_servers, counts
 
     def _apply_connection_settings(self, override: dict = None):
         """
@@ -703,12 +773,16 @@ class VpnSwitcher:
         CONFIG = {
             ('recommended',     'country'):            (1, 50),
             ('randomized_load', 'country'):            (1, 300),
+            ('recommended',     'city'):               (1, 50),
+            ('randomized_load', 'city'):               (1, 300),
             ('recommended',     'region'):             (1, 50),
             ('randomized_load', 'region'):             (12, 300),
             ('recommended',     'custom_region_in'):   (12, custom_limit),
             ('recommended',     'custom_region_ex'):   (12, custom_limit),
+            ('recommended',     'custom_region_city'): (12, custom_limit),
             ('randomized_load', 'custom_region_in'):   (12, 0),
             ('randomized_load', 'custom_region_ex'):   (12, 0),
+            ('randomized_load', 'custom_region_city'): (12, 0),
             ('recommended',     'worldwide'):          (1, 50),
             ('randomized_load', 'worldwide'):          (12, 0),
             (None, 'special'):                         (0, -1),
@@ -747,12 +821,20 @@ class VpnSwitcher:
             self._current_limit = 0
     
     def _handle_sequential_country_switch(self) -> bool:
-        """Switches to the next country in a sequential rotation. Returns True if switched."""
+        """Switches to the next country (or city) in a sequential rotation. Returns True if switched."""
         crit = self.settings.connection_criteria
-        if crit.get('main_choice') == 'country' and len(crit.get('country_ids', [])) > 1:
-            self._current_country_index = (self._current_country_index + 1) % len(crit['country_ids']) # Reset to 0 if at the end
-            self._apply_connection_settings() # Reset limit for new country
+        scope = crit.get('main_choice')
+
+        if scope == 'country' and len(crit.get('country_ids', [])) > 1:
+            self._current_country_index = (self._current_country_index + 1) % len(crit['country_ids'])
+            self._apply_connection_settings()
             return True
+
+        if scope == 'city' and len(crit.get('city_ids', [])) > 1:
+            self._current_country_index = (self._current_country_index + 1) % len(crit['city_ids'])
+            self._apply_connection_settings()
+            return True
+
         return False
 
     def _handle_special_rotation(self):
@@ -831,7 +913,7 @@ class VpnSwitcher:
         # If the loop completes without returning, all retries have failed.
         raise NordVpnConnectionError(f"Failed to get an unused special server for '{group_title}' after multiple retries.")
 
-    def _verify_connection(self, target_name: str, delays: List[int] = [3, 5, 7]):
+    def _verify_connection(self, target_name: str, delays: List[int] = [3, 5, 7, 10]):
         """
         Verifies a new connection is active, protected, and different from the
         last known IP. It uses a flexible list of delays for retries.
@@ -861,7 +943,7 @@ class VpnSwitcher:
 
             if new_ip and new_ip != self._last_known_ip and new_ip_info.get("protected"):
                 print(f"\x1b[32m[{time.strftime('%H:%M:%S', time.localtime())}] Rotation successful!\x1b[0m")
-                print(f"\x1b[32mConnected to '{target_name}'. New IP: {new_ip}\x1b[0m")
+                print(f"\x1b[32mConnected to {target_name}. New IP: {new_ip}\x1b[0m")
                 self._last_known_ip = new_ip
                 return # Success!
             

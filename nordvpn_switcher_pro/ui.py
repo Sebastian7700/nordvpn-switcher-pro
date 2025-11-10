@@ -32,7 +32,8 @@ def prompt_main_menu() -> str:
         "How would you like to connect?",
         choices=[
             Choice("To a specific Country (or a sequence of countries)", "country"),
-            Choice("To a specific Region (e.g., Europe, The Americas)", "region"),
+            Choice("To a specific City (or a sequence of cities)", "city"),
+            Choice("To a specific Region (e.g., Europe, The Americas, Custom Region)", "region"),
             Choice("To a random server worldwide (Standard servers only)", "worldwide"),
             Choice("To a Special Server Group (e.g., P2P, Double VPN)", "special"),
             Choice("Exit", "exit")
@@ -48,7 +49,7 @@ def prompt_country_id_input(countries: List[Dict]) -> List[int]:
     This is used for the 'country' main menu choice.
     """
     clear_screen()
-    print("\x1b[1m\x1b[36m--- Select Country/Countries by ID ---\x1b[0m\n")
+    print("\x1b[1m\x1b[36m--- Select Country/Countries by ID or Name ---\x1b[0m\n")
 
     sorted_countries = sorted(countries, key=lambda x: x['name'])
     
@@ -98,6 +99,76 @@ def prompt_country_id_input(countries: List[Dict]) -> List[int]:
     return result_ids
 
 
+def prompt_city_id_input(countries: List[Dict]) -> List[int]:
+    """
+    Displays a formatted list of country -> city entries and prompts the user to enter city IDs.
+    Accepts either numeric city IDs or city names. Country names may be used to help display only.
+    """
+    clear_screen()
+    print("\x1b[1m\x1b[36m--- Select City/Cities by ID or Name ---\x1b[0m\n")
+
+    # Build a flat list of (country, city) dicts for display and lookup
+    rows = []
+    for country in sorted(countries, key=lambda x: x['name']):
+        for city in sorted(country.get('cities', []), key=lambda c: c['name']):
+            rows.append({
+                'country_name': country['name'],
+                'country_id': country.get('id'),
+                'city_id': city['id'],
+                'city_name': city['name'],
+                'serverCount': city.get('serverCount', 0)
+            })
+
+    header = f"{'ID':<7} | {'Country':<25} | {'City':<30} | {'Servers':<8}"
+    print(header)
+    print("-" * len(header))
+    for r in rows:
+        print(
+            f"\x1b[96m{r['city_id']:<7}\x1b[0m | "
+            f"{r['country_name']:<25} | "
+            f"{r['city_name']:<30} | "
+            f"{r['serverCount']:<8}"
+        )
+    print("-" * len(header))
+    print("\n\x1b[33mServers will be rotated through each city sequentially (e.g., all servers in Berlin, then New York).\x1b[0m\n")
+
+    id_to_row = {str(r['city_id']): r for r in rows}
+    name_to_id = {r['city_name'].lower(): r['city_id'] for r in rows}
+
+    def validate_input(text):
+        if not text:
+            return "Please enter at least one city ID or name."
+        parts = [part.strip() for part in text.split(",") if part.strip()]
+        unrecognized = []
+        for part in parts:
+            if part.isdigit():
+                if part not in id_to_row:
+                    unrecognized.append(part)
+            else:
+                if part.lower() not in name_to_id:
+                    unrecognized.append(part)
+        if unrecognized:
+            return f"Unrecognized: {', '.join(unrecognized)}. Please check spelling or use valid IDs/names."
+        return True
+
+    ids_input = questionary.text(
+        "Enter one or more city IDs or names from the list above, separated by commas:",
+        validate=validate_input,
+        style=get_custom_style()
+    ).ask()
+
+    if not ids_input:
+        return []
+
+    result_ids = []
+    for part in [p.strip() for p in ids_input.split(",") if p.strip()]:
+        if part.isdigit():
+            result_ids.append(int(part))
+        else:
+            result_ids.append(name_to_id[part.lower()])
+    return result_ids
+
+
 def prompt_country_selection_multi(countries: List[Dict]) -> List[int]:
     """
     Displays an interactive, scrollable, multi-select list of countries.
@@ -123,6 +194,43 @@ def prompt_country_selection_multi(countries: List[Dict]) -> List[int]:
     return selected_ids if selected_ids else []
 
 
+def prompt_city_selection_multi(countries: List[Dict]) -> List[int]:
+    """
+    Interactive multi-select for cities. Displays entries grouped/sorted by country
+    with the country and city shown in separate columns. Returns a list of city IDs (ints).
+    """
+    clear_screen()
+
+    # Build flat list sorted by country then city
+    flat = []
+    for country in sorted(countries, key=lambda x: x['name']):
+        for city in sorted(country.get('cities', []), key=lambda c: c['name']):
+            flat.append((country['name'], city))
+
+    # Column header
+    header = f"{'Country':<25} | {'City':<30} | {'Srv':>4}"
+    separator = "-" * len(header)
+
+    choices = [
+        questionary.Separator(header),
+        questionary.Separator(separator)
+    ]
+
+    # Add choices
+    for country_name, city in flat:
+        title = f"{country_name:<25} | {city['name']:<30} | {city.get('serverCount', 0):>4}"
+        choices.append(Choice(title=title, value=city['id']))
+
+    selected_ids = questionary.checkbox(
+        "Select the cities for your custom region:",
+        choices=choices,
+        style=get_custom_style(),
+        instruction="(Use arrow keys to navigate, <space> to select, <a> to toggle, <i> to invert, <enter> to confirm)"
+    ).ask()
+
+    return selected_ids if selected_ids else []
+
+
 def prompt_group_selection(groups: List[Dict], group_type: str) -> Union[int, str, None]:
     """Displays a selection list for server groups (Regions or Special)."""
     clear_screen()
@@ -134,11 +242,11 @@ def prompt_group_selection(groups: List[Dict], group_type: str) -> Union[int, st
         region_groups = [g for g in groups if g.get('type', {}).get('identifier') == 'regions']
         
         choices = [Choice(title=g['title'], value=g['id']) for g in region_groups]
-        
-        # Add a separator and the custom region options
+
         choices.append(questionary.Separator("--- Or Create a Custom Region ---"))
         choices.append(Choice(title="Include a specific list of countries", value="custom_region_in"))
         choices.append(Choice(title="Exclude a specific list of countries", value="custom_region_ex"))
+        choices.append(Choice(title="Include a specific list of cities", value="custom_region_city"))
         choices.append(Choice(title="Cancel", value="exit"))
 
     else: # For 'special' groups, the logic is simpler
@@ -228,77 +336,97 @@ def get_user_criteria(api_client) -> Dict[str, Any]:
 
     criteria = {"main_choice": main_choice}
 
-    # --- Country Selection Flow ---
-    if main_choice == "country":
-        countries = api_client.get_countries()
-        selected_ids = prompt_country_id_input(countries)
-        if not selected_ids:
-            raise ConfigurationError("No countries were selected. Aborting setup.")
-        criteria['country_ids'] = selected_ids
-        strategy = prompt_connection_strategy()
-        _handle_cancel(strategy)
-        criteria['strategy'] = strategy
-    
-    # --- Region/Custom Region Flow ---
-    elif main_choice == "region":
-        groups = api_client.get_groups()
-        region_choice = prompt_group_selection(groups, 'regions')
-        _handle_cancel(region_choice)
-
-        if isinstance(region_choice, str) and region_choice.startswith('custom_region'):
-            criteria['main_choice'] = region_choice
+    # Main choice handling
+    match main_choice:
+        # --- Country Selection ---
+        case 'country':
             countries = api_client.get_countries()
-            selected_ids = prompt_country_selection_multi(countries)
+            selected_ids = prompt_country_id_input(countries)
             if not selected_ids:
-                raise ConfigurationError("No countries were selected for the custom region. Aborting setup.")
+                raise ConfigurationError("No countries were selected. Aborting setup.")
             criteria['country_ids'] = selected_ids
-        else:
-            criteria['group_id'] = region_choice
-            
-        strategy = prompt_connection_strategy()
-        _handle_cancel(strategy)
-        criteria['strategy'] = strategy
-    
-    # --- Worldwide Flow ---
-    elif main_choice == "worldwide":
-        strategy = prompt_connection_strategy()
-        _handle_cancel(strategy)
-        criteria['strategy'] = strategy
+            strategy = prompt_connection_strategy()
+            _handle_cancel(strategy)
+            criteria['strategy'] = strategy
 
-    # --- Special Server Flow ---
-    elif main_choice == "special":
-        all_groups = api_client.get_groups()
-        
-        print("\n\x1b[33mChecking availability of special server groups...\x1b[0m")
-        special_groups = []
-        for group in all_groups:
-            # Filter for "Legacy category" and exclude "Standard VPN servers"
-            if group.get('type', {}).get('identifier') == 'legacy_group_category' and \
-            group.get('identifier') != 'legacy_standard':
-                try:
-                    count_data = api_client.get_group_server_count(group['id'])
-                    if count_data.get('count', 0) > 0:
-                        # Add the server count to the group object for display
-                        group['serverCount'] = count_data.get('count')
-                        special_groups.append(group)
-                except ApiClientError:
-                    # If the count endpoint fails for a group, just skip it
-                    continue
-        
-        if not special_groups:
-            raise ConfigurationError("Could not find any available special server groups at the moment.")
-        
-        # Now prompt the user with the filtered, available list
-        group_id = prompt_group_selection(special_groups, 'special')
-        _handle_cancel(group_id)
-            
-        group_details = next((g for g in all_groups if g['id'] == group_id), {})
-        
-        criteria['group_identifier'] = group_details.get('identifier')
-        criteria['group_title'] = group_details.get('title')
-        retry_count = prompt_special_server_retry()
-        _handle_cancel(retry_count)
-        criteria['retry_count'] = retry_count
+        # --- City Selection ---
+        case 'city':
+            countries = api_client.get_countries()
+            selected_ids = prompt_city_id_input(countries)
+            if not selected_ids:
+                raise ConfigurationError("No cities were selected. Aborting setup.")
+            criteria['city_ids'] = selected_ids
+            strategy = prompt_connection_strategy()
+            _handle_cancel(strategy)
+            criteria['strategy'] = strategy
+
+        case 'region':
+            # --- Region / Custom Region Selection ---
+            groups = api_client.get_groups()
+            region_choice = prompt_group_selection(groups, 'regions')
+            _handle_cancel(region_choice)
+
+            if isinstance(region_choice, str) and region_choice.startswith('custom_region'):
+                criteria['main_choice'] = region_choice
+                countries = api_client.get_countries()
+                # If the user chose a custom city region, prompt for cities
+                if region_choice == 'custom_region_city':
+                    selected_ids = prompt_city_selection_multi(countries)
+                    if not selected_ids:
+                        raise ConfigurationError("No cities were selected for the custom region. Aborting setup.")
+                    criteria['city_ids'] = selected_ids
+                else:
+                    selected_ids = prompt_country_selection_multi(countries)
+                    if not selected_ids:
+                        raise ConfigurationError("No countries were selected for the custom region. Aborting setup.")
+                    criteria['country_ids'] = selected_ids
+            else:
+                criteria['group_id'] = region_choice
+
+            strategy = prompt_connection_strategy()
+            _handle_cancel(strategy)
+            criteria['strategy'] = strategy
+
+        # --- Worldwide Selection ---
+        case 'worldwide':
+            strategy = prompt_connection_strategy()
+            _handle_cancel(strategy)
+            criteria['strategy'] = strategy
+
+        # -- Special Server Group Selection ---
+        case 'special':
+            all_groups = api_client.get_groups()
+
+            print("\n\x1b[33mChecking availability of special server groups...\x1b[0m")
+            special_groups = []
+            for group in all_groups:
+                # Filter for "Legacy category" and exclude "Standard VPN servers"
+                if group.get('type', {}).get('identifier') == 'legacy_group_category' and \
+                group.get('identifier') != 'legacy_standard':
+                    try:
+                        count_data = api_client.get_group_server_count(group['id'])
+                        if count_data.get('count', 0) > 0:
+                            # Add the server count to the group object for display
+                            group['serverCount'] = count_data.get('count')
+                            special_groups.append(group)
+                    except ApiClientError:
+                        # If the count endpoint fails for a group, just skip it
+                        continue
+
+            if not special_groups:
+                raise ConfigurationError("Could not find any available special server groups at the moment.")
+
+            # Now prompt the user with the filtered, available list
+            group_id = prompt_group_selection(special_groups, 'special')
+            _handle_cancel(group_id)
+
+            group_details = next((g for g in all_groups if g['id'] == group_id), {})
+
+            criteria['group_identifier'] = group_details.get('identifier')
+            criteria['group_title'] = group_details.get('title')
+            retry_count = prompt_special_server_retry()
+            _handle_cancel(retry_count)
+            criteria['retry_count'] = retry_count
 
     # Final validation to ensure a strategy was selected where needed
     if main_choice != 'special' and not criteria.get('strategy'):
