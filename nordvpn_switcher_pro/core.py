@@ -113,7 +113,7 @@ class VpnSwitcher:
         self._current_limit: int = 0
         self._last_raw_server_count: int = -1
         self._is_session_active: bool = False
-        self._are_servers_newly_available_from_cache: bool = False
+        self._servers_available_from_cache_count: int = 0
         self._refresh_interval: int = 3600
         self._session_connections: int = 0  # Track number of successful connections in sessio
         # Server pool cache: Indexed by _current_country_index, stores pool state to avoid re-fetching when returning to a previous location
@@ -362,7 +362,7 @@ class VpnSwitcher:
         - _pool_timestamp: When the pool was last fetched
         - _current_limit: The API fetch limit used
         - _last_raw_server_count: The count of servers before filtering
-        - _are_servers_newly_available_from_cache: Whether new servers are available from cache
+        - _servers_available_from_cache_count: The count of servers newly available from cache
         
         This allows us to restore the exact state when switching back to a previously
         used location without re-fetching the data.
@@ -372,7 +372,7 @@ class VpnSwitcher:
             'timestamp': self._pool_timestamp,
             'limit': self._current_limit,
             'raw_count': self._last_raw_server_count,
-            'newly_available': self._are_servers_newly_available_from_cache,
+            'newly_available': self._servers_available_from_cache_count,
         }
 
     def _restore_pool_state(self) -> bool:
@@ -391,7 +391,7 @@ class VpnSwitcher:
         - _pool_timestamp
         - _current_limit
         - _last_raw_server_count
-        - _are_servers_newly_available_from_cache
+        - _servers_available_from_cache_count
         """
         if self._current_country_index not in self._server_pool_cache:
             return False
@@ -405,7 +405,7 @@ class VpnSwitcher:
             self._pool_timestamp = cached['timestamp']
             self._current_limit = cached['limit']
             self._last_raw_server_count = cached['raw_count']
-            self._are_servers_newly_available_from_cache = cached['newly_available']
+            self._servers_available_from_cache_count = cached['newly_available']
             return True
         
         return False
@@ -483,9 +483,8 @@ class VpnSwitcher:
 
         This method iterates through the `used_servers_cache` and removes any
         server IDs whose last-used timestamp is older than `cache_expiry_seconds`.
-        It also sets the `_are_servers_newly_available_from_cache` flag to True
-        if one or more servers were pruned, signaling that a server pool refresh
-        might yield new results.
+        It stores the count of pruned servers in `_servers_available_from_cache_count`,
+        signaling that a server pool refresh might yield new results.
         """
         now = time.time()
         initial_cache_size = len(self.settings.used_servers_cache)
@@ -502,7 +501,7 @@ class VpnSwitcher:
             pruned_count = initial_cache_size - len(self.settings.used_servers_cache)
             if pruned_count > 0:
                 print(f"\x1b[36mInfo: Pruned {pruned_count} expired servers from cache. They are now available for rotation.\x1b[0m")
-                self._are_servers_newly_available_from_cache = True
+                self._servers_available_from_cache_count += pruned_count
 
     def _transform_v2_response_to_v1_format(self, response_v2: dict) -> list:
         """
@@ -620,7 +619,7 @@ class VpnSwitcher:
 
         self._current_server_pool = self._filter_and_sort_servers(servers)
         self._pool_timestamp = time.time()
-        self._are_servers_newly_available_from_cache = False
+        self._servers_available_from_cache_count = 0
         
         # If the pool is empty after filtering, recursively fetch with increased limit
         # This is especially important for region mode where group ID filtering may
@@ -669,8 +668,8 @@ class VpnSwitcher:
         while True:
             if not self._current_server_pool:
                 # refill logic
-                if self._are_servers_newly_available_from_cache:
-                    print("\x1b[36mInfo: Server pool is empty, but newly available servers were found in cache. Refetching...\x1b[0m")
+                if self._servers_available_from_cache_count > 10:
+                    print(f"\x1b[36mInfo: Server pool is empty, but {self._servers_available_from_cache_count} servers expired from cache. Refetching...\x1b[0m")
                     self._fetch_and_build_pool(increase_limit=False)
                 else:
                     print("\x1b[36mInfo: Server pool is empty. Attempting to fetch more servers...\x1b[0m")
