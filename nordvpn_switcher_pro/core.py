@@ -210,11 +210,11 @@ class VpnSwitcher:
                         print(f"\x1b[36mInfo: Switching to the next {switch_result} in the sequence. Fetching servers...\x1b[0m")
                         self._fetch_and_build_pool()
                     else:
-                        print(f"\x1b[36mInfo: Switched to the next {switch_result} in the sequence. Using cached pool.\x1b[0m")
+                        print(f"\x1b[36mInfo: Switched to the next {switch_result} in the sequence, using cached pool.\x1b[0m")
                 else:
                     print("\x1b[33mWarning: 'next_location=True' was ignored. This feature is only available for the 'country' or 'city' setting with multiple countries/cities configured.\x1b[0m")
             else:
-                print("\x1b[33mInfo: 'next_location=True' ignored because no connection has been made yet in this session.\x1b[0m")
+                print("\x1b[36mInfo: 'next_location=True' ignored because no connection has been made yet in this session.\x1b[0m")
 
         # Handle special server rotation separately
         if self.settings.connection_criteria.get("main_choice") == "special":
@@ -606,10 +606,16 @@ class VpnSwitcher:
         if increase_limit and len(servers) == self._last_raw_server_count:
             switch_result = self._handle_sequential_country_switch()
             if switch_result in ['country', 'city']:
-                print(f"\x1b[36mInfo: Exhausted servers for current {switch_result}. Fetching servers and switching to next {switch_result}...\x1b[0m")
-                # Reset the raw server count before the recursive call for the new location
-                self._last_raw_server_count = -1 
-                return self._fetch_and_build_pool() # Recursive call for new location
+                # Try to restore cached pool state for the new location
+                if not self._restore_pool_state():
+                    # Cache was not available or stale, fetch fresh servers
+                    print(f"\x1b[36mInfo: Exhausted servers for current {switch_result}. Fetching servers and switching to next {switch_result}...\x1b[0m")
+                    # Reset the raw server count before the recursive call for the new location
+                    self._last_raw_server_count = -1 
+                    return self._fetch_and_build_pool() # Recursive call for new location
+                else:
+                    print(f"\x1b[36mInfo: Exhausted servers for current {switch_result}. Switched to next {switch_result} using cached pool.\x1b[0m")
+                    return
             else:
                 self._current_server_pool = [] # Truly exhausted
                 return
