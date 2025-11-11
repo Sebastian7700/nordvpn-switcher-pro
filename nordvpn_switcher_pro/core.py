@@ -18,7 +18,7 @@ class VpnSwitcher:
     rotating connections, and terminating the session gracefully.
     """
 
-    def __init__(self, settings_path: str = "nordvpn_settings.json", force_setup: bool = False, cache_expiry_hours: int = 24, custom_exe_path: str = None):
+    def __init__(self, settings_path: str = "nordvpn_settings.json", force_setup: bool = False, cache_expiry_hours: int = 24, custom_exe_path: str = None, clear_server_cache: bool = False):
         """
         Creates a VpnSwitcher to automate NordVPN server connections.
 
@@ -68,6 +68,12 @@ class VpnSwitcher:
                 executable. If provided, this path is used instead of attempting
                 to find it automatically. (Use if NordVPN is installed in a
                 non-standard location.)
+            clear_server_cache (bool, optional): If `True`, clears all used
+                servers from the settings file immediately after loading
+                (or creating) settings and saves the cleared state back to
+                `settings_path`. This is useful if you want to force the
+                switcher to treat all servers as unused on startup.
+                Defaults to `False`.
         """
         self.settings_path = settings_path
         # Detect platform for fake-useragent restriction and controller setup
@@ -91,6 +97,10 @@ class VpnSwitcher:
                 print(f"[nordvpn-switcher-pro] Platform '{_os}' is not supported. {_message}")
         self.api_client = NordVpnApiClient(fakeua_os)
         self.settings = self._load_or_create_settings(force_setup, cache_expiry_hours, custom_exe_path)
+
+        # Optionally clear the used-servers cache on startup.
+        if clear_server_cache:
+            self._clear_server_cache()
 
         # --- Instance variables for an active session ---
         self._controller_type: type[WindowsVpnController] | None = controller_type  # Store the controller class for later instantiation
@@ -314,6 +324,25 @@ class VpnSwitcher:
         settings.save(self.settings_path)
         print(f"\n\x1b[32mSettings saved to '{self.settings_path}'.\x1b[0m")
         return settings
+
+    def _clear_server_cache(self):
+        """
+        Clears the `used_servers_cache` and persists the cleared settings if requested.
+        """
+        # If settings aren't loaded for some reason, do nothing.
+        if getattr(self, 'settings', None) is None:
+            return
+
+        if self.settings.used_servers_cache:
+            self.settings.used_servers_cache = {}
+            try:
+                self.settings.save(self.settings_path)
+            except Exception:
+                print(f"\x1b[33mWarning: Failed to save cleared settings to '{self.settings_path}'.\x1b[0m")
+            else:
+                print(f"\x1b[32mInfo: Cleared used servers cache and saved to '{self.settings_path}'.\x1b[0m")
+        else:
+            print(f"\x1b[36mInfo: Used servers cache already empty.\x1b[0m")
 
     def _preflight_check_custom_region(self, settings: RotationSettings):
         """
