@@ -192,7 +192,7 @@ class VpnSwitcher:
             if self._session_connections > 0:
                 switch_result = self._handle_sequential_country_switch()
                 if switch_result in ['country', 'city']:
-                    print(f"\x1b[36mInfo: Switching to the next {switch_result} in the sequence...\x1b[0m")
+                    print(f"\x1b[36mInfo: Switching to the next {switch_result} in the sequence. Fetching servers...\x1b[0m")
                     # Force a pool refresh for the new location
                     self._fetch_and_build_pool()
                 else:
@@ -461,12 +461,19 @@ class VpnSwitcher:
                     server_locations.append(location)
             
             # Construct the new server dictionary in the v1 format.
-            transformed_servers.append({
+            server_dict = {
                 'id': server_data.get('id'),
                 'name': server_data.get('name'),
                 'load': server_data.get('load'),
                 'locations': server_locations,  # Now includes properly nested city data
-            })
+            }
+            
+            # Preserve the groups field from v2 response if present.
+            # This is used to filter servers by group ID (e.g., region filtering).
+            if 'group_ids' in server_data:
+                server_dict['groups'] = [{'id': gid} for gid in server_data.get('group_ids', [])]
+            
+            transformed_servers.append(server_dict)
             
         return transformed_servers
 
@@ -505,7 +512,7 @@ class VpnSwitcher:
         if increase_limit and len(servers) == self._last_raw_server_count:
             switch_result = self._handle_sequential_country_switch()
             if switch_result in ['country', 'city']:
-                print(f"\x1b[36mInfo: Exhausted servers for current {switch_result}. Switching to next {switch_result}.\x1b[0m")
+                print(f"\x1b[36mInfo: Exhausted servers for current {switch_result}. Fetching servers and switching to next {switch_result}...\x1b[0m")
                 # Reset the raw server count before the recursive call for the new location
                 self._last_raw_server_count = -1 
                 return self._fetch_and_build_pool() # Recursive call for new location
@@ -519,6 +526,13 @@ class VpnSwitcher:
         self._current_server_pool = self._filter_and_sort_servers(servers)
         self._pool_timestamp = time.time()
         self._are_servers_newly_available_from_cache = False
+        
+        # If the pool is empty after filtering, recursively fetch with increased limit
+        # This is especially important for region mode where group ID filtering may
+        # result in an empty pool that can be refilled with more servers.
+        if not self._current_server_pool and not increase_limit:
+            print(f"\x1b[36mInfo: Server pool is empty after filtering. Fetching more servers...\x1b[0m")
+            return self._fetch_and_build_pool(increase_limit=True)
     
     def _get_next_server(self) -> Dict:
         """
@@ -616,6 +630,7 @@ class VpnSwitcher:
 
             case "region":
                 params["filters[servers_groups][id]"] = crit["group_id"]
+                params["fields[servers.groups.id]"] = ""
 
             case "custom_region_city":
                 params["filters[servers_groups][id]"] = 11
@@ -644,6 +659,14 @@ class VpnSwitcher:
             server_id = server['id']
             if server_id in self.settings.used_servers_cache:
                 if (now - self.settings.used_servers_cache[server_id]) < self.settings.cache_expiry_seconds:
+                    continue
+            
+            # If the server has a 'groups' field (from v2 API region filtering),
+            # verify that group ID 11 (standard VPN servers) is included.
+            # This ensures we don't get non-standard servers in region mode.
+            if 'groups' in server:
+                group_ids = [g.get('id') for g in server.get('groups', [])]
+                if 11 not in group_ids:
                     continue
             
             filtered.append(server)
