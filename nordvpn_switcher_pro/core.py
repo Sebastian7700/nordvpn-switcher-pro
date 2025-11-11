@@ -313,7 +313,7 @@ class VpnSwitcher:
         else:
             exe_path = find_nordvpn_executable()
         try:
-            criteria = ui.get_user_criteria(self.api_client)
+            criteria, countries = ui.get_user_criteria(self.api_client)
         except SystemExit as e:
             # Catch the exit and re-raise to cleanly terminate the program
             raise SystemExit(e)
@@ -328,7 +328,9 @@ class VpnSwitcher:
         )
 
         if criteria.get('main_choice', '').startswith('custom_region') and criteria.get('strategy') == 'recommended':
-            self._preflight_check_custom_region(settings)
+            should_switch_strategy = self._preflight_check_custom_region(settings, countries)
+            if should_switch_strategy:
+                settings.connection_criteria['strategy'] = 'randomized_load'
 
         settings.save(self.settings_path)
         print(f"\n\x1b[32mSettings saved to '{self.settings_path}'.\x1b[0m")
@@ -410,14 +412,18 @@ class VpnSwitcher:
         
         return False
 
-    def _preflight_check_custom_region(self, settings: RotationSettings):
+    def _preflight_check_custom_region(self, settings: RotationSettings, countries: List[Dict]) -> bool:
         """
         Validates and optimizes settings for a new 'custom_region'.
 
         This one-time check fetches all recommended servers to:
         1. Ensure the user's custom region (inclusion/exclusion list) returns at
-           least one server.
-        2. Calculate an optimal 'limit' parameter for API calls. This is done
+           least one server. If no servers are found, the strategy is automatically
+           switched to 'randomized_load' for a better user experience.
+        2. If some individual countries/cities have no recommended servers, warn
+           the user and suggest switching to 'randomized_load' strategy. The
+           `countries` parameter is used to resolve IDs to human-readable names.
+        3. Calculate an optimal 'limit' parameter for API calls. This is done
            by finding the index of the 50th (or last, if fewer) server from the
            filtered list within the original, unfiltered list. This ensures future
            API calls fetch just enough servers to cover the top 50 valid ones.
@@ -427,10 +433,12 @@ class VpnSwitcher:
         Args:
             settings (RotationSettings): The newly created settings object to
                 validate and modify.
+            countries (List[Dict]): The list of country dicts returned by the API
+                (each may contain a `cities` array). Used to map IDs to names.
 
-        Raises:
-            NoServersAvailableError: If the specified custom region yields no
-                recommended servers.
+        Returns:
+            bool: True if the strategy should be switched to 'randomized_load'
+                (due to no recommended servers found), False otherwise.
         """
         print("\n\x1b[36mInfo: Performing a one-time check on your custom region...\x1b[0m")
 
@@ -452,21 +460,43 @@ class VpnSwitcher:
 
         filtered_recs, id_counts = self._filter_servers_by_custom_region(all_recs, settings, counting=True)
 
-        # If the user created an inclusion custom region, warn about any empty entries
-        if settings.connection_criteria.get('main_choice') == 'custom_region_in':
+        # Collect problematic entries with resolved names (country or city)
+        problematic_entries = []
+
+        main_choice = settings.connection_criteria.get('main_choice', '')
+
+        # If the user created an inclusion custom region, check for empty country entries
+        if main_choice == 'custom_region_in':
             for country_id in settings.connection_criteria.get('country_ids', []):
                 if id_counts.get(country_id, 0) == 0:
-                    print(f"\x1b[33mWarning: Country ID {country_id} has no recommended servers.\x1b[0m")
+                    # Resolve name from countries list if available
+                    country = next((c for c in countries if c.get('id') == country_id), None)
+                    name = country.get('name') if country else f"A country"
+                    problematic_entries.append({'id': country_id, 'name': name})
 
         # If the user created a custom city region, check by city ids
-        if settings.connection_criteria.get('main_choice') == 'custom_region_city':
+        if main_choice == 'custom_region_city':
             for city_id in settings.connection_criteria.get('city_ids', []):
                 if id_counts.get(city_id, 0) == 0:
-                    print(f"\x1b[33mWarning: City ID {city_id} has no recommended servers.\x1b[0m")
+                    # Find the city in the countries list
+                    city_name = None
+                    for country in countries:
+                        city = next((ct for ct in country.get('cities', []) if ct.get('id') == city_id), None)
+                        if city:
+                            city_name = city.get('name')
+                            country_name = country.get('name')
+                            break
+                    name = f"{city_name} ({country_name})" if city_name and country_name else f"A city"
+                    problematic_entries.append({'id': city_id, 'name': name})
 
         if not filtered_recs:
-            print("\x1b[33mWarning: Your custom region has no servers recommended by the NordVPN algorithm. Please try again using the 'Randomized by load' strategy.\x1b[0m")
-            raise NoServersAvailableError("Your custom region has no recommended servers. Please try again using the 'Randomized by load' strategy.")
+            print("\x1b[33mWarning: Your custom region has no servers recommended by the NordVPN algorithm. The strategy will be automatically switched to 'Randomized by load'.\x1b[0m")
+            return True
+        else:
+            if problematic_entries:
+                for entry in problematic_entries:
+                    print(f"\x1b[33mWarning: [ID {entry['id']}] {entry['name']} has no recommended servers.\x1b[0m")
+                print(f"\x1b[33mConsider switching to the 'Randomized by load' strategy to use all of your selected locations.\x1b[0m")
         
         target_server = filtered_recs[min(49, len(filtered_recs) - 1)]
         try:
@@ -476,6 +506,7 @@ class VpnSwitcher:
             settings.connection_criteria['custom_limit'] = 50
 
         print(f"\x1b[32mSuccess! Your custom region has {len(filtered_recs)} recommended servers.\x1b[0m")
+        return False
 
     def _prune_cache(self):
         """

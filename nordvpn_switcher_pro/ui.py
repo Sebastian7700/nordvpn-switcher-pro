@@ -313,7 +313,7 @@ def prompt_special_server_retry() -> int:
         return 5
 
 
-def get_user_criteria(api_client) -> Dict[str, Any]:
+def get_user_criteria(api_client) -> tuple[Dict[str, Any], List[Dict]]:
     """
     Guides the user through the entire interactive setup process.
 
@@ -324,13 +324,17 @@ def get_user_criteria(api_client) -> Dict[str, Any]:
         api_client: An instance of NordVpnApiClient to fetch data.
 
     Returns:
-        A dictionary containing the user's final connection criteria.
+        A tuple containing:
+        - A dictionary with the user's final connection criteria.
+        - A list of countries (may be empty for flows that don't need it).
+          Used for preflight checks that need names/ids lookup.
     """
     def _handle_cancel(result):
         """Centralized cancellation handler."""
         if result is None or result == 'exit':
             raise SystemExit("Setup cancelled by user.")
-        
+    
+    countries = []
     main_choice = prompt_main_menu()
     _handle_cancel(main_choice)
 
@@ -432,7 +436,7 @@ def get_user_criteria(api_client) -> Dict[str, Any]:
     if main_choice != 'special' and not criteria.get('strategy'):
         raise ConfigurationError("Connection strategy was not selected. Aborting setup.")
 
-    return criteria
+    return criteria, countries
 
 
 def display_critical_error(reason: str):
