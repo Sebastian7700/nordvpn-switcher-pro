@@ -115,7 +115,9 @@ class VpnSwitcher:
         self._is_session_active: bool = False
         self._are_servers_newly_available_from_cache: bool = False
         self._refresh_interval: int = 3600
-        self._session_connections: int = 0  # Track number of successful connections in session
+        self._session_connections: int = 0  # Track number of successful connections in sessio
+        # Server pool cache: Indexed by _current_country_index, stores pool state to avoid re-fetching when returning to a previous location
+        self._server_pool_cache: Dict[int, Dict] = {}
     
     def start_session(self):
         """
@@ -202,9 +204,13 @@ class VpnSwitcher:
             if self._session_connections > 0:
                 switch_result = self._handle_sequential_country_switch()
                 if switch_result in ['country', 'city']:
-                    print(f"\x1b[36mInfo: Switching to the next {switch_result} in the sequence. Fetching servers...\x1b[0m")
-                    # Force a pool refresh for the new location
-                    self._fetch_and_build_pool()
+                    # Try to restore cached pool state for the new location
+                    if not self._restore_pool_state():
+                        # Cache was not available or stale, fetch fresh servers
+                        print(f"\x1b[36mInfo: Switching to the next {switch_result} in the sequence. Fetching servers...\x1b[0m")
+                        self._fetch_and_build_pool()
+                    else:
+                        print(f"\x1b[36mInfo: Switched to the next {switch_result} in the sequence. Using cached pool.\x1b[0m")
                 else:
                     print("\x1b[33mWarning: 'next_location=True' was ignored. This feature is only available for the 'country' or 'city' setting with multiple countries/cities configured.\x1b[0m")
             else:
@@ -263,6 +269,9 @@ class VpnSwitcher:
         self._controller.disconnect()
         self.settings.save(self.settings_path)
         self._is_session_active = False
+        # Clear the in-memory server pool cache to free memory
+        self._server_pool_cache.clear()
+        
         if close_app:
             self._controller.close()
         print(f"\x1b[32mSession terminated. Final state saved to '{self.settings_path}'.\x1b[0m\n")
@@ -343,6 +352,63 @@ class VpnSwitcher:
                 print(f"\x1b[32mInfo: Cleared used servers cache and saved to '{self.settings_path}'.\x1b[0m")
         else:
             print(f"\x1b[36mInfo: Used servers cache already empty.\x1b[0m")
+
+    def _save_pool_state(self):
+        """
+        Saves the current pool state to the cache indexed by the current country/city index.
+        
+        This caches the following state variables:
+        - _current_server_pool: The list of available servers
+        - _pool_timestamp: When the pool was last fetched
+        - _current_limit: The API fetch limit used
+        - _last_raw_server_count: The count of servers before filtering
+        - _are_servers_newly_available_from_cache: Whether new servers are available from cache
+        
+        This allows us to restore the exact state when switching back to a previously
+        used location without re-fetching the data.
+        """
+        self._server_pool_cache[self._current_country_index] = {
+            'pool': self._current_server_pool.copy(),
+            'timestamp': self._pool_timestamp,
+            'limit': self._current_limit,
+            'raw_count': self._last_raw_server_count,
+            'newly_available': self._are_servers_newly_available_from_cache,
+        }
+
+    def _restore_pool_state(self) -> bool:
+        """
+        Restores the pool state from the cache if available and still valid.
+        
+        Returns:
+            bool: True if the pool state was successfully restored, False otherwise.
+            
+        A cached pool is considered valid if:
+        - It exists in the cache for the current country/city index
+        - The cached timestamp is still within the refresh interval
+        
+        If the pool is restored, the following variables are updated:
+        - _current_server_pool
+        - _pool_timestamp
+        - _current_limit
+        - _last_raw_server_count
+        - _are_servers_newly_available_from_cache
+        """
+        if self._current_country_index not in self._server_pool_cache:
+            return False
+        
+        cached = self._server_pool_cache[self._current_country_index]
+        now = time.time()
+        
+        # Check if the cached pool is still valid (within refresh interval)
+        if (now - cached['timestamp']) <= self._refresh_interval:
+            self._current_server_pool = cached['pool'].copy()
+            self._pool_timestamp = cached['timestamp']
+            self._current_limit = cached['limit']
+            self._last_raw_server_count = cached['raw_count']
+            self._are_servers_newly_available_from_cache = cached['newly_available']
+            return True
+        
+        return False
 
     def _preflight_check_custom_region(self, settings: RotationSettings):
         """
@@ -885,6 +951,10 @@ class VpnSwitcher:
     def _handle_sequential_country_switch(self) -> str | bool:
         """
         Switches to the next country or city in a sequential rotation.
+        
+        This method saves the current pool state before switching so it can be
+        restored later if the user switches back to this location. The restoration
+        logic is handled by the caller (typically in rotate() with next_location=True).
 
         Returns:
             Union[str, bool]: Returns 'country' if switched to next country,
@@ -894,13 +964,23 @@ class VpnSwitcher:
         scope = crit.get('main_choice')
 
         if scope == 'country' and len(crit.get('country_ids', [])) > 1:
+            # Save current state before switching
+            self._save_pool_state()
+            
+            # Switch to next country
             self._current_country_index = (self._current_country_index + 1) % len(crit['country_ids'])
             self._apply_connection_settings()
+            
             return 'country'
 
         if scope == 'city' and len(crit.get('city_ids', [])) > 1:
+            # Save current state before switching
+            self._save_pool_state()
+            
+            # Switch to next city
             self._current_country_index = (self._current_country_index + 1) % len(crit['city_ids'])
             self._apply_connection_settings()
+            
             return 'city'
 
         return False
