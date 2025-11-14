@@ -108,6 +108,7 @@ class VpnSwitcher:
         self._session_coordinates: Dict | None = None
         self._last_known_ip: str | None = None
         self._current_server_pool: List[Dict] = []
+        self._current_pool_allowed_load: int = 50
         self._pool_timestamp: float = 0
         self._current_country_index: int = 0
         self._current_limit: int = 0
@@ -115,9 +116,15 @@ class VpnSwitcher:
         self._is_session_active: bool = False
         self._servers_available_from_cache_count: int = 0
         self._refresh_interval: int = 3600
-        self._session_connections: int = 0  # Track number of successful connections in sessio
+        self._session_connections: int = 0  # Track number of successful connections in session
+        self._has_switched: bool = False # Track if a location switch occurred in rotate() to prevent duplicate switches
+        # Whether we can still attempt to increase the fetch limit to find more servers
+        self._limit_increase_possible: bool = True
         # Server pool cache: Indexed by _current_country_index, stores pool state to avoid re-fetching when returning to a previous location
         self._server_pool_cache: Dict[int, Dict] = {}
+        # Geo-rotation state
+        self._server_loc_lookup: Dict = {}
+        self._last_connected_loc_id: int | None = None
     
     def start_session(self):
         """
@@ -164,7 +171,7 @@ class VpnSwitcher:
             print("\x1b[32mSession started in 'special' mode. Ready to rotate.\x1b[0m")
         self._session_connections = 0  # Reset connection count at session start
     
-    def rotate(self, next_location: bool = False):
+    def rotate(self, next_location: bool = False, prevent_auto_switch: bool = False):
         """
         Connects to a new NordVPN server based on the configured settings.
 
@@ -183,6 +190,12 @@ class VpnSwitcher:
                 was made during the session; otherwise, the first country/city is not skipped.
                 This parameter only has an effect if the connection setting was set to 'country' or 'city'
                 with multiple countries/cities configured. Defaults to `False`.
+            prevent_auto_switch (bool, optional): If `True`, prevents the switcher from
+                automatically switching to the next country or city when all servers for
+                the current location have been exhausted. Instead, it will continue using
+                cached (previously used) servers from the current location. This parameter
+                only has an effect if the connection setting was set to 'country' or 'city'
+                with multiple countries/cities configured. Defaults to `False`.
 
         Raises:
             ConfigurationError: If the session has not been started.
@@ -197,6 +210,11 @@ class VpnSwitcher:
         print(f"\n\x1b[34m[{time.strftime('%H:%M:%S', time.localtime())}] Rotation started...\x1b[0m")
 
         self._prune_cache()
+        self._has_switched = False
+
+        # Handle prevent_auto_switch flag
+        if prevent_auto_switch:
+            self._has_switched = True
 
         # Handle manual switching
         if next_location:
@@ -204,6 +222,7 @@ class VpnSwitcher:
             if self._session_connections > 0:
                 switch_result = self._handle_sequential_country_switch()
                 if switch_result in ['country', 'city']:
+                    self._has_switched = True
                     # Try to restore cached pool state for the new location
                     if not self._restore_pool_state():
                         # Cache was not available or stale, fetch fresh servers
@@ -240,6 +259,7 @@ class VpnSwitcher:
             self._controller.connect(target_server['name'])
             self._verify_connection(logging_name)
             self._session_connections += 1
+            self._last_connected_loc_id = self._get_loc_key(target_server)
         except NordVpnConnectionError as e:
             ui.display_critical_error(str(e))
             raise # Re-raise the exception after informing the user
@@ -271,6 +291,8 @@ class VpnSwitcher:
         self._is_session_active = False
         # Clear the in-memory server pool cache to free memory
         self._server_pool_cache.clear()
+        self._server_loc_lookup.clear()
+        self._last_connected_loc_id = None
         
         if close_app:
             self._controller.close()
@@ -355,6 +377,24 @@ class VpnSwitcher:
         else:
             print(f"\x1b[36mInfo: Used servers cache already empty.\x1b[0m")
 
+    def _get_loc_key(self, server: Dict) -> int | None:
+        """
+        Extracts the location key (country ID or city ID) from a server object
+        based on the current geo-rotation strategy.
+        """
+        strategy = self.settings.connection_criteria.get('strategy')
+        if strategy not in ("randomized_city", "randomized_country"):
+            return None
+
+        country_mode = (strategy == "randomized_country")
+        
+        loc = server.get('locations', [{}])[0]
+        
+        if country_mode:
+            return loc.get('country', {}).get('id')
+        else: # city mode
+            return loc.get('id')
+
     def _save_pool_state(self):
         """
         Saves the current pool state to the cache indexed by the current country/city index.
@@ -375,6 +415,8 @@ class VpnSwitcher:
             'limit': self._current_limit,
             'raw_count': self._last_raw_server_count,
             'newly_available': self._servers_available_from_cache_count,
+            'limit_possible': self._limit_increase_possible,
+            'allowed_load': self._current_pool_allowed_load,
         }
 
     def _restore_pool_state(self) -> bool:
@@ -408,6 +450,9 @@ class VpnSwitcher:
             self._current_limit = cached['limit']
             self._last_raw_server_count = cached['raw_count']
             self._servers_available_from_cache_count = cached['newly_available']
+            # Restore whether we may still try increasing the limit for this cached pool
+            self._limit_increase_possible = cached.get('limit_possible', True)
+            self._current_pool_allowed_load = cached.get('allowed_load', 50)
             return True
         
         return False
@@ -610,7 +655,8 @@ class VpnSwitcher:
         on user settings, calls the appropriate NordVPN API endpoint, and then
         processes the results. The processing includes filtering out servers that
         are high-load or in the recently-used cache, and then sorting them
-        according to the selected strategy ('recommended' or 'randomized_load').
+        according to the selected strategy ('recommended', 'randomized_load',
+        'randomized_city', or 'randomized_country').
 
         If the pool is empty and a sequential country rotation is configured, it
         may switch to the next country and recursively call itself.
@@ -631,21 +677,33 @@ class VpnSwitcher:
         else:
             response_v2 = self.api_client.get_servers_v2(api_params)
             servers = self._transform_v2_response_to_v1_format(response_v2)
-            
+        
+        # If the API returned fewer servers than the requested limit, further
+        # increasing the limit is unlikely to produce new results for this
+        # location — record that we should not try to increase the limit.
+        if self._current_limit > 0 and len(servers) < self._current_limit:
+            self._limit_increase_possible = False
+
         # Check if the API returned the same number of servers as last time.
         # This correctly detects when we've exhausted a country's list.
         if increase_limit and len(servers) == self._last_raw_server_count:
-            switch_result = self._handle_sequential_country_switch()
-            if switch_result in ['country', 'city']:
-                # Try to restore cached pool state for the new location
-                if not self._restore_pool_state():
-                    # Cache was not available or stale, fetch fresh servers
-                    print(f"\x1b[36mInfo: Exhausted servers for current {switch_result}. Fetching servers and switching to next {switch_result}...\x1b[0m")
-                    # Reset the raw server count before the recursive call for the new location
-                    self._last_raw_server_count = -1 
-                    return self._fetch_and_build_pool() # Recursive call for new location
+            self._limit_increase_possible = False
+            # Only switch if a switch hasn't already occurred in rotate()
+            if not self._has_switched:
+                switch_result = self._handle_sequential_country_switch()
+                if switch_result in ['country', 'city']:
+                    # Try to restore cached pool state for the new location
+                    if not self._restore_pool_state():
+                        # Cache was not available or stale, fetch fresh servers
+                        print(f"\x1b[36mInfo: Exhausted servers for current {switch_result}. Fetching servers and switching to next {switch_result}...\x1b[0m")
+                        # Reset the raw server count before the recursive call for the new location
+                        self._last_raw_server_count = -1
+                        return self._fetch_and_build_pool() # Recursive call for new location
+                    else:
+                        print(f"\x1b[36mInfo: Exhausted servers for current {switch_result}. Switched to next {switch_result} using cached pool.\x1b[0m")
+                        return
                 else:
-                    print(f"\x1b[36mInfo: Exhausted servers for current {switch_result}. Switched to next {switch_result} using cached pool.\x1b[0m")
+                    self._current_server_pool = [] # Truly exhausted
                     return
             else:
                 self._current_server_pool = [] # Truly exhausted
@@ -655,13 +713,18 @@ class VpnSwitcher:
         self._last_raw_server_count = len(servers)
 
         self._current_server_pool = self._filter_and_sort_servers(servers)
+        if not self._current_server_pool and not self._limit_increase_possible:
+            # Try again allowing higher load (80). Fallback: It's better to connect
+            # to a somewhat loaded server than to have no connection at all.
+            self._current_server_pool = self._filter_and_sort_servers(servers, allowed_load=80)
+
         self._pool_timestamp = time.time()
         self._servers_available_from_cache_count = 0
         
         # If the pool is empty after filtering, recursively fetch with increased limit
         # This is especially important for region mode where group ID filtering may
         # result in an empty pool that can be refilled with more servers.
-        if not self._current_server_pool and not increase_limit:
+        if not self._current_server_pool and self._limit_increase_possible:
             print(f"\x1b[36mInfo: Server pool is empty after filtering. Fetching more servers...\x1b[0m")
             return self._fetch_and_build_pool(increase_limit=True)
     
@@ -690,27 +753,36 @@ class VpnSwitcher:
                 exhausted and no valid, online server can be found.
         """
         # Helper to fetch & validate one server by ID
-        def _fetch_and_validate(server_id: str, allowed_load: int = 50) -> Dict:
+        def _fetch_and_validate(server_id: str) -> Dict:
             details = self.api_client.get_server_details(server_id)
             if not details:
                 return None
             srv = details[0]
+            allowed_load = self._current_pool_allowed_load or 50
             if srv.get('load', 100) >= allowed_load:
                 return None
             if srv.get('status') != 'online':
                 return None
             return srv
 
+        scope = self.settings.connection_criteria.get('main_choice')
+        strategy = self.settings.connection_criteria.get('strategy')
         # First sweep: live pool
         while True:
             if not self._current_server_pool:
                 # refill logic
-                if self._servers_available_from_cache_count > 10:
+                if self._servers_available_from_cache_count >= 10 or (self._servers_available_from_cache_count > 0 and not self._limit_increase_possible):
                     print(f"\x1b[36mInfo: Server pool is empty, but {self._servers_available_from_cache_count} servers expired from cache. Refetching...\x1b[0m")
                     self._fetch_and_build_pool(increase_limit=False)
                 else:
-                    print("\x1b[36mInfo: Server pool is empty. Attempting to fetch more servers...\x1b[0m")
-                    self._fetch_and_build_pool(increase_limit=True)
+                    if self._limit_increase_possible:
+                        print("\x1b[36mInfo: Server pool is empty. Attempting to fetch more servers...\x1b[0m")
+                        self._fetch_and_build_pool(increase_limit=True)
+                    elif not self._has_switched:
+                        # Hack for city/country mode: _fetch_and_build_pool has to be called to switch to next location
+                        if scope in ("city", "country"):
+                            print("\x1b[36mInfo: Server pool is empty. Attempting to fetch more servers...\x1b[0m")
+                            self._fetch_and_build_pool(increase_limit=True)
 
             # still empty?
             if not self._current_server_pool:
@@ -727,17 +799,78 @@ class VpnSwitcher:
         if not self.settings.used_servers_cache:
             raise NoServersAvailableError("Server pool is exhausted and the cache is empty. Cannot rotate.")
 
+        self._current_pool_allowed_load = 50
+        strategy = self.settings.connection_criteria.get('strategy')
+
+        # --- Special geo-rotation cache fallback ---
+        if strategy in ("randomized_city", "randomized_country") and self._server_loc_lookup.get("locations"):
+            # Iterate through cached servers, from oldest to newest
+            sorted_by_oldest = sorted(self.settings.used_servers_cache, key=self.settings.used_servers_cache.get)
+            
+            for oldest_server_id in sorted_by_oldest:
+                # Find the location of the cached server
+                server_loc_id = None
+                for loc_id, server_ids in self._server_loc_lookup["locations"].items():
+                    if oldest_server_id in server_ids:
+                        server_loc_id = loc_id
+                        break
+                
+                # To maintain rotation, discard if it's the same location as the last connection
+                if server_loc_id is None or server_loc_id == self._last_connected_loc_id:
+                    continue
+                
+                # Check if this location is the one that still has fresh servers
+                if server_loc_id == self._server_loc_lookup.get("fresh_loc_id"):
+                    server_ids_loc = self._server_loc_lookup["locations"].get(server_loc_id, [])
+                    fresh_ids_loc = [sid for sid in server_ids_loc if sid not in self.settings.used_servers_cache]
+                    
+                    # Try to validate and connect to any of the fresh servers first
+                    for fresh_id in fresh_ids_loc:
+                        new_server = _fetch_and_validate(fresh_id)
+                        if new_server:
+                            print("\x1b[36mInfo: Using a fresh server from the single remaining location with unused servers.\x1b[0m")
+                            return new_server
+                
+                # If no fresh servers were usable, or it's a location without fresh servers, use the cached server
+                new_server = _fetch_and_validate(oldest_server_id)
+                if new_server:
+                    print("\x1b[91mCRITICAL: No new servers available. Falling back to the least-recently-used server from cache, maintaining geo-rotation.\x1b[0m")
+                    print("\x1b[93mIt is highly recommended to clear the cache or select settings with more servers.\x1b[0m")
+                    return new_server
+                
+                # If validation fails, the loop continues to the next oldest cached server.
+        
+        # --- Sequential rotation cache fallback (`country` or `city` scope) ---
+        elif scope in ('country', 'city') and self._server_loc_lookup.get("locations"):
+            crit = self.settings.connection_criteria
+            id_list = crit.get('country_ids') if scope == 'country' else crit.get('city_ids')
+            current_target_loc_id = id_list[self._current_country_index]
+
+            valid_server_ids_for_loc = self._server_loc_lookup["locations"].get(current_target_loc_id, [])
+
+            if valid_server_ids_for_loc:
+                sorted_by_oldest = sorted(self.settings.used_servers_cache, key=self.settings.used_servers_cache.get)
+                for server_id in sorted_by_oldest:
+                    if server_id in valid_server_ids_for_loc:
+                        new_server = _fetch_and_validate(server_id)
+                        if new_server:
+                            print("\x1b[91mCRITICAL: No new servers available. Falling back to the least-recently-used server from cache for the current location.\x1b[0m")
+                            print("\x1b[93mIt is highly recommended to clear the cache or select settings with more servers.\x1b[0m")
+                            return new_server
+
+        # --- Standard cache fallback (if geo-rotation logic fails or is not applicable) ---
         print("\x1b[91mCRITICAL: No new servers available. Falling back to the least-recently-used server from cache.\x1b[0m")
         print("\x1b[93mIt is highly recommended to clear the cache or select settings with more servers.\x1b[0m")
-        # sorted by oldest timestamp
         for server_id in sorted(self.settings.used_servers_cache, key=self.settings.used_servers_cache.get):
-            new_server = _fetch_and_validate(server_id, allowed_load=70)  # Allow higher load for cache fallback
+            new_server = _fetch_and_validate(server_id)
             if new_server:
                 return new_server
 
         # nothing left
         raise NoServersAvailableError("Exhausted both live pool and cache without finding a good server.")
-    
+
+
+
     def _prepare_api_params(self) -> Dict:
         """Translates user criteria into a dictionary of API parameters."""
         crit = self.settings.connection_criteria
@@ -779,19 +912,134 @@ class VpnSwitcher:
 
         return params
 
-    def _filter_and_sort_servers(self, servers: List[Dict]) -> List[Dict]:
-        """Filters a raw server list by load, cache, and custom region criteria, then sorts it."""
-        now = time.time()
-        filtered = []
+    def _filter_and_sort_servers(self, servers: List[Dict], allowed_load: int = 50) -> List[Dict]:
+        """
+        Filters a raw server list by load, cache, and custom region criteria, then sorts it.
+
+        Parameters:
+            servers : List[Dict]
+                Raw list of server dictionaries returned by the API (v1-like format).
+            allowed_load : int, optional
+                Maximum allowed server load (0-100) to accept a server during
+                filtering. Defaults to 50. A higher value (e.g. 80) can be used as
+                a fallback when no servers are available at the default threshold.
+
+        Returns:
+            List[Dict]
+                The filtered and sorted list of servers. If empty, callers may
+                retry with a more lenient `allowed_load` value.
+        """
+        # --- Helpers ---
+        # Helper to bucket servers by load
+        def create_buckets(slist: List[Dict]) -> Dict[int, List[Dict]]:
+            """Create load buckets from the server list."""
+            buckets = {}
+            for server in slist:
+                load = server.get("load", 100)
+                bucket_key = 0 if load < 20 else (load // 10) * 10
+                if bucket_key not in buckets:
+                    buckets[bucket_key] = []
+                buckets[bucket_key].append(server)
+            return buckets
+        
+        # Helper to order servers randomized based on load buckets
+        def randomized_load_sort(slist: List[Dict]) -> List[Dict]:
+            """Sort servers by load buckets with randomization within each bucket."""
+            buckets = create_buckets(slist)
+            sorted_servers = []
+            for key in sorted(buckets.keys()):
+                random.shuffle(buckets[key])
+                sorted_servers.extend(buckets[key])
+            return sorted_servers
+
+        # Helper to build server location lookup from pre_filtered servers
+        def build_server_loc_lookup(server_list: List[Dict]):
+            """
+            Builds _server_loc_lookup["locations"] from a list of servers.
+            Maps location IDs to lists of server IDs.
+            """
+            if "locations" not in self._server_loc_lookup:
+                self._server_loc_lookup["locations"] = {}
+            
+            locs = {}
+            for s in server_list:
+                loc_id = self._get_loc_key(s)
+                if loc_id:
+                    if loc_id not in locs:
+                        locs[loc_id] = []
+                    locs[loc_id].append(s['id'])
+            
+            # Update the lookup with new location data
+            for loc_id, server_ids in locs.items():
+                # Merge with existing if location already exists
+                if loc_id in self._server_loc_lookup["locations"]:
+                    # Combine and deduplicate server IDs
+                    existing_ids = set(self._server_loc_lookup["locations"][loc_id])
+                    new_ids = set(server_ids)
+                    self._server_loc_lookup["locations"][loc_id] = list(existing_ids | new_ids)
+                else:
+                    self._server_loc_lookup["locations"][loc_id] = server_ids
+
+        # Helper to process one bucket with round-robin location selection
+        def process_bucket(bucket, forbidden_start_id=None, allow_early_exit=True):
+            """
+            Process a bucket using round-robin selection by location.
+            Avoids repeating the same location consecutively.
+            """
+            groups = {}
+            for s in bucket:
+                key = self._get_loc_key(s)
+                if key not in groups:
+                    groups[key] = []
+                groups[key].append(s)
+
+            original_count = len(groups)
+            removed_locs = 0
+            result_local = []
+
+            def flatten(g):
+                """Flatten groups dict into a single list."""
+                return [srv for v in g.values() for srv in v]
+
+            while any(groups.values()):
+                if len(groups) == 1:
+                    remaining = flatten(groups)
+                    if not result_local and remaining:
+                        first = remaining[0]
+                        if self._get_loc_key(first) != forbidden_start_id:
+                            result_local.append(first)
+                            remaining = remaining[1:]
+                    return result_local, remaining
+                temp = []
+                for key in list(groups.keys()):
+                    lst = groups[key]
+                    if lst:
+                        temp.append(lst.pop(0))
+                        if not lst:
+                            groups.pop(key)
+                            removed_locs += 1
+                if not temp:
+                    break
+                random.shuffle(temp)
+                if result_local:
+                    last_loc = self._get_loc_key(result_local[-1])
+                    if self._get_loc_key(temp[0]) == last_loc:
+                        temp.append(temp.pop(0))
+                else:
+                    if self._get_loc_key(temp[0]) == forbidden_start_id:
+                        temp.append(temp.pop(0))
+                result_local.extend(temp)
+                used_ratio = removed_locs / max(original_count, 1)
+                allocated_ratio = len(result_local) / max(len(bucket), 1)
+                if allow_early_exit and used_ratio > 0.5 and allocated_ratio > 0.618:
+                    return result_local, flatten(groups)
+            return result_local, []
+        
+        # --- Filtering ---
+        # First, filter by basic validity (groups check)
+        self._current_pool_allowed_load = allowed_load
+        standard_servers = []
         for server in servers:
-            if server.get("load", 100) > 50:
-                continue
-            
-            server_id = server['id']
-            if server_id in self.settings.used_servers_cache:
-                if (now - self.settings.used_servers_cache[server_id]) < self.settings.cache_expiry_seconds:
-                    continue
-            
             # If the server has a 'groups' field (from v2 API region filtering),
             # verify that group ID 11 (standard VPN servers) is included.
             # This ensures we don't get non-standard servers in region mode.
@@ -799,30 +1047,133 @@ class VpnSwitcher:
                 group_ids = [g.get('id') for g in server.get('groups', [])]
                 if 11 not in group_ids:
                     continue
-            
-            filtered.append(server)
-        
-        # Apply custom region filter if necessary
-        crit = self.settings.connection_criteria
-        if crit.get('main_choice', '').startswith('custom_region'):
-            filtered, _ = self._filter_servers_by_custom_region(filtered, self.settings)
+            standard_servers.append(server)
 
-        # Sort based on strategy
-        if crit.get('strategy') == "randomized_load":
-            buckets = {}
-            for server in filtered:
-                load = server.get("load", 100)
-                bucket_key = 0 if load < 20 else (load // 10) * 10
-                if bucket_key not in buckets: buckets[bucket_key] = []
-                buckets[bucket_key].append(server)
+        # Get strategy and build location server map if needed
+        crit = self.settings.connection_criteria
+        strategy = crit.get('strategy')
+        loc_server_map = None
+        if strategy in ("randomized_city", "randomized_country"):
+            # loc_server_map: calculate how many servers each location has
+            loc_server_map = {}
+            for server in standard_servers:
+                loc_key = self._get_loc_key(server)
+                if loc_key is not None:
+                    loc_server_map[loc_key] = loc_server_map.get(loc_key, 0) + 1
+
+        # Filter by load with adaptive threshold based on location server counts
+        pre_filtered = []
+        for server in standard_servers:
+            temp_allowed = None
+            if loc_server_map and len(loc_server_map) < 10:
+                loc_key = self._get_loc_key(server)
+                if loc_key is not None and loc_server_map.get(loc_key, 0) < 5:
+                    temp_allowed = 90
             
-            sorted_servers = []
-            for key in sorted(buckets.keys()):
-                random.shuffle(buckets[key])
-                sorted_servers.extend(buckets[key])
-            return sorted_servers
+            load_limit = temp_allowed or allowed_load
+            if server.get("load", 100) > load_limit:
+                continue
+
+            pre_filtered.append(server)
+
+        # Apply custom region filter if necessary
+        scope = crit.get('main_choice', '')
+        if scope.startswith('custom_region'):
+            pre_filtered, _ = self._filter_servers_by_custom_region(pre_filtered, self.settings)
+
+        # Separate fresh (unused) servers from cached ones
+        now = time.time()
+        filtered = []
+        for server in pre_filtered:
+            server_id = server['id']
+            if server_id in self.settings.used_servers_cache:
+                if (now - self.settings.used_servers_cache[server_id]) < self.settings.cache_expiry_seconds:
+                    continue
+            filtered.append(server)
+
+        # --- Handle sequential rotation exhaustion ---
+        # When a single country/city is exhausted, build a lookup map of all its servers.
+        # This allows the CRITICAL fallback to pick a cached server from the correct location.
+        if scope in ('country', 'city') and not self._limit_increase_possible:
+            if "locations" not in self._server_loc_lookup:
+                self._server_loc_lookup["locations"] = {}
+            
+            current_id_list = crit.get('country_ids') if scope == 'country' else crit.get('city_ids')
+            current_loc_id = current_id_list[self._current_country_index]
+            
+            if pre_filtered:
+                self._server_loc_lookup["locations"][current_loc_id] = [s['id'] for s in pre_filtered]
+
+        # --- Sorting Strategy Selection ---
+        if strategy == "recommended":
+            return filtered
+
+        if strategy == "randomized_load" or strategy not in ("randomized_city", "randomized_country"):
+            return randomized_load_sort(filtered)
+
+        # --- Geo-rotation specific logic (`randomized_city` or `randomized_country`) ---
+        # Always build server location lookup for geo-rotation
+        build_server_loc_lookup(pre_filtered)
         
-        return filtered # 'recommended' servers are already sorted by the API
+        all_locs_in_fetch = {self._get_loc_key(s) for s in pre_filtered if self._get_loc_key(s) is not None}
+        if len(all_locs_in_fetch) <= 1:
+            if self._limit_increase_possible:
+                return []
+            else:
+                print(f"\x1b[36mInfo: Switching to 'Randomized by load' strategy. Not enough locations found for Geo rotation.\x1b[0m")
+                return randomized_load_sort(filtered)
+
+        available_locs_fresh = {self._get_loc_key(s) for s in filtered if self._get_loc_key(s) is not None}
+
+        # --- Edge case: All servers in cache except one location ---
+        if len(available_locs_fresh) <= 1:
+            if self._limit_increase_possible:
+                return []  # Signal to caller to increase limit and refetch
+
+            # If fresh servers are exhausted for all but one location, and we cannot fetch more,
+            # set fresh_loc_id with the only remaining available location
+            if len(available_locs_fresh) == 1:
+                self._server_loc_lookup["fresh_loc_id"] = list(available_locs_fresh)[0]
+            
+            # Return empty list to trigger CRITICAL fallback in _get_next_server
+            return []  # No fresh locations at all
+
+        # --- Standard geo-rotation sorting for multiple available fresh locations ---
+        buckets = create_buckets(filtered)
+        sorted_servers = []
+        remaining = []
+        last_loc_id = self._last_connected_loc_id
+        keys_sorted = sorted(buckets.keys())
+        for i, key in enumerate(keys_sorted):
+            current = remaining + buckets[key]
+            is_last = (i == len(keys_sorted) - 1)
+
+            part, leftover = process_bucket(
+                current,
+                forbidden_start_id=last_loc_id,
+                allow_early_exit=not is_last,
+            )
+            sorted_servers.extend(part)
+            remaining = leftover
+            last_loc_id = self._get_loc_key(sorted_servers[-1]) if sorted_servers else last_loc_id
+            if is_last and remaining:
+                if self._limit_increase_possible and len(sorted_servers) > 50:
+                    break
+                part2, leftover = process_bucket(
+                    remaining,
+                    forbidden_start_id=last_loc_id,
+                    allow_early_exit=False,
+                )
+                sorted_servers.extend(part2)
+                
+                # Check if leftover contains only one location, and if so, assign it to fresh_loc_id
+                if leftover:
+                    leftover_locs = {self._get_loc_key(s) for s in leftover if self._get_loc_key(s) is not None}
+                    if len(leftover_locs) == 1:
+                        self._server_loc_lookup["fresh_loc_id"] = list(leftover_locs)[0]
+
+                break
+        return sorted_servers
 
     def _filter_servers_by_custom_region(self, servers: List[Dict], settings: RotationSettings, counting: bool = False) -> Tuple[List[Dict], Dict[int, int]]:
         """
@@ -900,15 +1251,19 @@ class VpnSwitcher:
         | Strategy         | Scope               | Refresh (h) | Fetch (limit)  |
         |------------------|---------------------|-------------|----------------|
         | recommended      | country             | 1           | 50             |
-        | randomized_load  | country             | 1           | 300            |
+        | randomized       | country             | 1           | 300            |
+        | recommended      | city                | 1           | 50             |
+        | randomized       | city                | 1           | 300            |
         | recommended      | region              | 1           | 50             |
-        | randomized_load  | region              | 12          | 300            |
+        | randomized       | region              | 12          | 300            |
         | recommended      | custom_region_in    | 12          | custom_limit   |
+        | randomized       | custom_region_in    | 12          | 0              |
         | recommended      | custom_region_ex    | 12          | custom_limit   |
-        | randomized_load  | custom_region_in    | 12          | 0              |
-        | randomized_load  | custom_region_ex    | 12          | 0              |
+        | randomized       | custom_region_ex    | 12          | 0              |
+        | recommended      | custom_region_city  | 12          | custom_limit   |
+        | randomized       | custom_region_city  | 12          | 0              |
         | recommended      | worldwide           | 1           | 50             |
-        | randomized_load  | worldwide           | 12          | 0              |
+        | randomized       | worldwide           | 12          | 0              |
         | -                | special             | 0           | -1             |
 
         Notes
@@ -916,9 +1271,10 @@ class VpnSwitcher:
         - **recommended**: Fetch a low number of servers (`limit > 0`) since the first entries
           returned are already the best. We refresh these more frequently (shorter interval)
           because fetching is cheap and users expect top-performing servers.
-        - **randomized_load**: Must fetch all available entries (`limit = 0`) to randomize them
-          properly. We refresh less often (longer interval) because this returns many candidates;
-          before connecting, we still check live load to ensure it's low.
+        - **randomized** (including randomized_load, randomized_city, randomized_country): Must fetch
+          all available entries (`limit = 0`) to randomize them properly. We refresh less often
+          (longer interval) because this returns many candidates; before connecting, we still check
+          live load to ensure it's low.
         - `refresh=0` means never refresh; `limit=0` means fetch all available servers; `limit=-1` means fetch no servers.
 
         """
@@ -933,29 +1289,35 @@ class VpnSwitcher:
         scope        = crit.get('main_choice')
         custom_limit = crit.get('custom_limit')
 
+        # Normalize strategy: treat all randomized_* as 'randomized' for lookup
+        lookup_strat = 'randomized' if strat and strat.startswith('randomized') else strat
+
         # default fallback
         CONFIG = {
             ('recommended',     'country'):            (1, 50),
-            ('randomized_load', 'country'):            (1, 300),
+            ('randomized',      'country'):            (1, 300),
             ('recommended',     'city'):               (1, 50),
-            ('randomized_load', 'city'):               (1, 300),
+            ('randomized',      'city'):               (1, 300),
             ('recommended',     'region'):             (1, 50),
-            ('randomized_load', 'region'):             (12, 300),
+            ('randomized',      'region'):             (12, 300),
             ('recommended',     'custom_region_in'):   (12, custom_limit),
+            ('randomized',      'custom_region_in'):   (12, 0),
             ('recommended',     'custom_region_ex'):   (12, custom_limit),
+            ('randomized',      'custom_region_ex'):   (12, 0),
             ('recommended',     'custom_region_city'): (12, custom_limit),
-            ('randomized_load', 'custom_region_in'):   (12, 0),
-            ('randomized_load', 'custom_region_ex'):   (12, 0),
-            ('randomized_load', 'custom_region_city'): (12, 0),
+            ('randomized',      'custom_region_city'): (12, 0),
             ('recommended',     'worldwide'):          (1, 50),
-            ('randomized_load', 'worldwide'):          (12, 0),
+            ('randomized',      'worldwide'):          (12, 0),
             (None, 'special'):                         (0, -1),
         }
 
         # fallback is (12h, limit=0)
-        refresh, limit = CONFIG.get((strat, scope), (12, 0))
+        refresh, limit = CONFIG.get((lookup_strat, scope), (12, 0))
         self._refresh_interval = refresh * 3600
         self._current_limit    = limit
+
+        if self._current_limit == 0:
+            self._limit_increase_possible = False
 
     def _handle_limit_increase(self):
         """
@@ -975,7 +1337,7 @@ class VpnSwitcher:
 
         if scope.startswith('custom_region'):
             limit_increase = 500
-        elif strat == 'randomized_load':
+        elif strat and strat.startswith('randomized'):
             limit_increase = 300
         else:
             limit_increase = 50
@@ -1005,6 +1367,8 @@ class VpnSwitcher:
             
             # Switch to next country
             self._current_country_index = (self._current_country_index + 1) % len(crit['country_ids'])
+            # Reset limit increase possibility for the newly-selected location
+            self._limit_increase_possible = True
             self._apply_connection_settings()
             
             return 'country'
@@ -1015,6 +1379,8 @@ class VpnSwitcher:
             
             # Switch to next city
             self._current_country_index = (self._current_country_index + 1) % len(crit['city_ids'])
+            # Reset limit increase possibility for the newly-selected location
+            self._limit_increase_possible = True
             self._apply_connection_settings()
             
             return 'city'

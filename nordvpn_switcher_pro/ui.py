@@ -184,10 +184,16 @@ def prompt_country_selection_multi(countries: List[Dict]) -> List[int]:
         ) for c in sorted_countries
     ]
     
+    def validate_selection(selected):
+        if not selected or len(selected) == 0:
+            return "Please select at least one country."
+        return True
+    
     selected_ids = questionary.checkbox(
         "Select the countries for your custom region:",
         choices=choices,
         style=get_custom_style(),
+        validate=validate_selection,
         instruction="(Use arrow keys to navigate, <space> to select, <a> to toggle, <i> to invert, <enter> to confirm)"
     ).ask()
     
@@ -221,10 +227,16 @@ def prompt_city_selection_multi(countries: List[Dict]) -> List[int]:
         title = f"{country_name:<25} | {city['name']:<30} | {city.get('serverCount', 0):>4}"
         choices.append(Choice(title=title, value=city['id']))
 
+    def validate_selection(selected):
+        if not selected or len(selected) == 0:
+            return "Please select at least one city."
+        return True
+
     selected_ids = questionary.checkbox(
         "Select the cities for your custom region:",
         choices=choices,
         style=get_custom_style(),
+        validate=validate_selection,
         instruction="(Use arrow keys to navigate, <space> to select, <a> to toggle, <i> to invert, <enter> to confirm)"
     ).ask()
 
@@ -267,24 +279,55 @@ def prompt_group_selection(groups: List[Dict], group_type: str) -> Union[int, st
     ).ask()
 
 
-def prompt_connection_strategy() -> str:
-    """Asks the user for their preferred server selection strategy."""
+def prompt_connection_strategy(possible_strats: List[str] = None) -> str:
+    """Asks the user for their preferred server selection strategy.
+
+    Args:
+        possible_strats: Optional list of allowed strategy identifiers. If None,
+            defaults to the original "standard" strategies ['recommended', 'randomized_load'].
+
+    Returns:
+        The chosen strategy identifier, or 'exit' if cancelled.
+    """
     clear_screen()
+
+    # Strategy metadata: id -> (title, description)
+    STRAT_INFO = {
+        'recommended': (
+            "Best available (recommended for IP rotation)",
+            "Uses NordVPN's algorithm based on distance from you and server load."
+        ),
+        'randomized_load': (
+            "Randomized by load (recommended for simple Geo rotation)",
+            "Picks randomly from all of your selected servers, prioritizing lower load."
+        ),
+        'randomized_country': (
+            "Randomized by country (Geo rotation with a different country each rotation)",
+            "Ensures each rotation connects to a different country than the previous rotation."
+        ),
+        'randomized_city': (
+            "Randomized by city (Geo rotation with a different city each rotation)",
+            "Ensures each rotation connects to a different city than the previous rotation."
+        ),
+    }
+
+    # Default to the two original strategies if nothing specified
+    if possible_strats is None:
+        possible_strats = ['recommended', 'randomized_load']
+
+    # Build choices preserving an order: recommended, randomized_load, randomized_country, randomized_city
+    order = ['recommended', 'randomized_load', 'randomized_country', 'randomized_city']
+    choices = []
+    for sid in order:
+        if sid in possible_strats and sid in STRAT_INFO:
+            title, desc = STRAT_INFO[sid]
+            choices.append(Choice(title=title, value=sid, description=desc))
+
+    choices.append(Choice("Cancel", "exit"))
+
     return questionary.select(
         "How should servers be selected?",
-        choices=[
-            Choice(
-                title="Best available (recommended for IP rotation)",
-                value="recommended",
-                description="Uses NordVPN's algorithm based on distance from you and server load."
-            ),
-            Choice(
-                title="Randomized by load (recommended for Geo rotation)",
-                value="randomized_load",
-                description="Picks randomly from all of your selected servers, prioritizing lower load."
-            ),
-            Choice("Cancel", "exit")
-        ],
+        choices=choices,
         style=get_custom_style(),
         instruction="(Use arrow keys to navigate, <enter> to select)"
     ).ask()
@@ -349,7 +392,23 @@ def get_user_criteria(api_client) -> tuple[Dict[str, Any], List[Dict]]:
             if not selected_ids:
                 raise ConfigurationError("No countries were selected. Aborting setup.")
             criteria['country_ids'] = selected_ids
-            strategy = prompt_connection_strategy()
+            # Determine if randomized_city is possible: every selected country must have
+            # more than one city available. If any selected country doesn't, only
+            # offer the standard strategies.
+            id_map = {c['id']: c for c in countries}
+            can_randomize_city = True
+            for cid in selected_ids:
+                country_obj = id_map.get(cid, {})
+                cities = country_obj.get('cities') or []
+                if len(cities) < 2:
+                    can_randomize_city = False
+                    break
+
+            possible = ['recommended', 'randomized_load']
+            if can_randomize_city:
+                possible.append('randomized_city')
+
+            strategy = prompt_connection_strategy(possible)
             _handle_cancel(strategy)
             criteria['strategy'] = strategy
 
@@ -360,7 +419,9 @@ def get_user_criteria(api_client) -> tuple[Dict[str, Any], List[Dict]]:
             if not selected_ids:
                 raise ConfigurationError("No cities were selected. Aborting setup.")
             criteria['city_ids'] = selected_ids
-            strategy = prompt_connection_strategy()
+            # For city-based selection only the standard strategies are available
+            possible = ['recommended', 'randomized_load']
+            strategy = prompt_connection_strategy(possible)
             _handle_cancel(strategy)
             criteria['strategy'] = strategy
 
@@ -384,16 +445,64 @@ def get_user_criteria(api_client) -> tuple[Dict[str, Any], List[Dict]]:
                     if not selected_ids:
                         raise ConfigurationError("No countries were selected for the custom region. Aborting setup.")
                     criteria['country_ids'] = selected_ids
+
+                # Build pools of available countries and cities based on the custom selection.
+                # For 'custom_region_in' the pool is exactly the selected countries.
+                # For 'custom_region_ex' the pool is all countries except the selected ones.
+                # For 'custom_region_city' the pool is the selected cities and their parent countries.
+                pool_country_ids = set()
+                pool_city_ids = set()
+
+                if region_choice == 'custom_region_city':
+                    # selected_ids are city ids
+                    pool_city_ids = set(selected_ids)
+                    # Determine parent countries for the selected cities
+                    for country in countries:
+                        for city in country.get('cities', []):
+                            if city['id'] in pool_city_ids:
+                                pool_country_ids.add(country['id'])
+                else:
+                    # selected_ids are country ids
+                    all_country_ids = {c['id'] for c in countries}
+                    if region_choice == 'custom_region_ex':
+                        pool_country_ids = all_country_ids - set(selected_ids)
+                    else:  # custom_region_in
+                        pool_country_ids = set(selected_ids)
+
+                    # collect all cities that belong to the pool countries
+                    for country in countries:
+                        if country['id'] in pool_country_ids:
+                            for city in country.get('cities', []):
+                                pool_city_ids.add(city['id'])
+
+                # Decide which randomized strategies are possible
+                possible = ['recommended', 'randomized_load']
+                if len(pool_country_ids) > 1:
+                    possible.append('randomized_country')
+                if len(pool_city_ids) > 1:
+                    possible.append('randomized_city')
+
+                strategy = prompt_connection_strategy(possible)
+                _handle_cancel(strategy)
+                criteria['strategy'] = strategy
             else:
                 criteria['group_id'] = region_choice
 
-            strategy = prompt_connection_strategy()
-            _handle_cancel(strategy)
-            criteria['strategy'] = strategy
+                # Note: when a pre-defined region group (group_id) is selected above
+                # we fall through to here and will handle offering all strategies below.
+
+            # If the user picked a standard predefined region (not custom), allow all strategies
+            if not isinstance(region_choice, str) or not region_choice.startswith('custom_region'):
+                possible = ['recommended', 'randomized_load', 'randomized_country', 'randomized_city']
+                strategy = prompt_connection_strategy(possible)
+                _handle_cancel(strategy)
+                criteria['strategy'] = strategy
 
         # --- Worldwide Selection ---
         case 'worldwide':
-            strategy = prompt_connection_strategy()
+            # All strategies possible for worldwide
+            possible = ['recommended', 'randomized_load', 'randomized_country', 'randomized_city']
+            strategy = prompt_connection_strategy(possible)
             _handle_cancel(strategy)
             criteria['strategy'] = strategy
 
