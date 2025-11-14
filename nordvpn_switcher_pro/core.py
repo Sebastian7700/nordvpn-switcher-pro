@@ -1409,33 +1409,19 @@ class VpnSwitcher:
         """
         crit = self.settings.connection_criteria
         group_title = crit.get('group_title')
-        consecutive_failures = 0
         disabled_retries = not (crit.get('retry_count', 1) > 0)
 
-        for i in range(crit.get('retry_count', 1) + 1): # +1 to make the loop intuitive
+        max_retries = crit.get('retry_count', 1)
+        attempts = max_retries + 1   # first + retries
+        for i in range(attempts):
             self._controller.connect(group_title, is_group=True)
 
-            # --- Dynamic Delay Logic ---
-            if consecutive_failures == 0:
-                delays = [3, 5, 10]
-            elif consecutive_failures == 1:
-                delays = [3, 5]
-            else:
-                delays = [5]
-            
             try:
-                self._verify_connection(group_title, delays=delays)
+                self._verify_connection(group_title)
                 new_ip = self._last_known_ip
-                consecutive_failures = 0 # Reset counter on a successful connection
             except NordVpnConnectionError as e:
-                consecutive_failures += 1
-                
-                if consecutive_failures >= 5:
-                    ui.display_critical_error("All consecutive connection attempts failed.")
-                    raise NordVpnConnectionError("NordVPN app appears to be unresponsive.") from e
-                else:
-                    print(f"\x1b[91mConnection verification failed: {e}. Retrying...\x1b[0m")
-                    continue
+                ui.display_critical_error(str(e))
+                raise
 
             # If retries are disabled, any successful connection is a success.
             # We still cache the IP for future runs, but we don't verify it against the cache now.
@@ -1457,48 +1443,44 @@ class VpnSwitcher:
                 return # Success!
             
             # If we are here, the server was used recently or couldn't be identified
-            if i < crit.get('retry_count', 1):
-                print(f"\x1b[33mGot a previously used server. Retrying rotation ({i+1}/{crit.get('retry_count', 1)})...\x1b[0m")
+            if i < max_retries:
+                print(f"\x1b[33mGot a previously used server. Retrying rotation ({i+1}/{max_retries})...\x1b[0m")
         
         # If the loop completes without returning, all retries have failed.
         raise NordVpnConnectionError(f"Failed to get an unused special server for '{group_title}' after multiple retries.")
 
-    def _verify_connection(self, target_name: str, delays: List[int] = [3, 5, 7, 10]):
+    def _verify_connection(self, target_name: str):
         """
         Verifies a new connection is active, protected, and different from the
-        last known IP. It uses a flexible list of delays for retries.
+        last known IP. API retries are handled internally by the API client.
 
         Args:
             target_name (str): The name of the server/group for logging.
-            delays (List[int]): A list of sleep durations (in seconds) to wait
-                                between checks. First element is the initial wait.
         
         Raises:
-            NordVpnConnectionError: If the connection cannot be verified after all retries.
+            NordVpnConnectionError: If the connection cannot be verified.
         """
-        # The number of checks we'll perform is one more than the number of delays.
-        print(f"\x1b[33mWaiting {delays[0]}s before checking connection status...\x1b[0m")
-        time.sleep(delays[0])
+        print(f"\x1b[33mWaiting 3s before checking connection status...\x1b[0m")
+        time.sleep(3)
 
-        num_checks = len(delays) - 1
-        for i in range(num_checks):
-            delay = delays[i+1]
-            try:
-                new_ip_info = self.api_client.get_current_ip_info()
-                new_ip = new_ip_info.get("ip")
-            except ApiClientError:
-                print(f"\x1b[33mCould not fetch IP, network may be changing. Waiting {delay}s before re-checking (Attempt {i+1}/{num_checks})...\x1b[0m")
-                time.sleep(delay)
-                continue
+        try:
+            new_ip_info = self.api_client.get_current_ip_info(
+                error_message_prefix="Could not fetch IP, network may be changing"
+            )
+            new_ip = new_ip_info.get("ip")
+        except ApiClientError as e:
+            # API client has already retried internally with increasing delays
+            raise NordVpnConnectionError(f"Failed to fetch IP information: {e}") from e
 
-            if new_ip and new_ip != self._last_known_ip and new_ip_info.get("protected"):
-                print(f"\x1b[32m[{time.strftime('%H:%M:%S', time.localtime())}] Rotation successful!\x1b[0m")
-                print(f"\x1b[32mConnected to {target_name}. New IP: {new_ip}\x1b[0m")
-                self._last_known_ip = new_ip
-                return # Success!
-            
-            print(f"\x1b[33mConnection not verified. Waiting {delay}s before re-checking (Attempt {i+1}/{num_checks})...\x1b[0m")
-            time.sleep(delay)
+        if new_ip and new_ip != self._last_known_ip and new_ip_info.get("protected"):
+            print(f"\x1b[32m[{time.strftime('%H:%M:%S', time.localtime())}] Rotation successful!\x1b[0m")
+            print(f"\x1b[32mConnected to {target_name}. New IP: {new_ip}\x1b[0m")
+            self._last_known_ip = new_ip
+            return  # Success!
 
-        # If the loop completes without returning, all retries have failed.
-        raise NordVpnConnectionError(f"Failed to verify connection to {target_name} after multiple attempts.")
+        # Connection doesn't meet criteria
+        raise NordVpnConnectionError(
+            f"Failed to verify connection to {target_name}. "
+            f"IP: {new_ip}, Protected: {new_ip_info.get('protected')}, "
+            f"Same as last: {new_ip == self._last_known_ip if new_ip else 'N/A'}"
+        )
