@@ -26,3 +26,8 @@ class NordVpnConnectionError(NordVpnSwitcherError):
 class NoServersAvailableError(NordVpnSwitcherError):
     """Raised specifically when no servers match the given criteria after fetching."""
     pass
+
+
+class UnsupportedPlatformError(NordVpnSwitcherError):
+    """Raised when the library is run on an unsupported operating system."""
+    pass

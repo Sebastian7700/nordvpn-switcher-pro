@@ -6,7 +6,7 @@ from typing import Dict, List, Tuple
 
 from . import ui
 from .api_client import NordVpnApiClient
-from .exceptions import ApiClientError, ConfigurationError, NordVpnConnectionError, NoServersAvailableError
+from .exceptions import ApiClientError, ConfigurationError, NordVpnConnectionError, NoServersAvailableError, UnsupportedPlatformError
 from .settings import RotationSettings
 from .windows_controller import WindowsVpnController, find_nordvpn_executable
 
@@ -87,14 +87,17 @@ class VpnSwitcher:
                 fakeua_os = "Linux"
                 controller_type = None
                 print(f"[nordvpn-switcher-pro] Linux is not yet supported. {_message}")
+                raise UnsupportedPlatformError(f"Linux is not yet supported. {_message}")
             case "Darwin":
                 fakeua_os = "Mac OS X"
                 controller_type = None
                 print(f"[nordvpn-switcher-pro] Mac OS X is not yet supported. {_message}")
+                raise UnsupportedPlatformError(f"Mac OS X is not yet supported. {_message}")
             case _:
                 fakeua_os = None
                 controller_type = None
                 print(f"[nordvpn-switcher-pro] Platform '{_os}' is not supported. {_message}")
+                raise UnsupportedPlatformError(f"Platform '{_os}' is not supported. {_message}")
         self.api_client = NordVpnApiClient(fakeua_os)
         self.settings = self._load_or_create_settings(force_setup, cache_expiry_hours, custom_exe_path)
 

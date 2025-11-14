@@ -8,7 +8,8 @@ from .exceptions import (
     ApiClientError,
     NordVpnCliError,
     NordVpnConnectionError,
-    NoServersAvailableError
+    NoServersAvailableError,
+    UnsupportedPlatformError
 )
 
 __all__ = [
@@ -20,5 +21,6 @@ __all__ = [
     "ApiClientError",
     "NordVpnCliError",
     "NordVpnConnectionError",
-    "NoServersAvailableError"
+    "NoServersAvailableError",
+    "UnsupportedPlatformError"
 ]
