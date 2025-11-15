@@ -1,6 +1,6 @@
 # NordVPN Switcher Pro
 
-[![PyPI version](https://badge.fury.io/py/nordvpn-switcher-pro.svg?v=103)](https://badge.fury.io/py/nordvpn-switcher-pro)
+[![PyPI version](https://badge.fury.io/py/nordvpn-switcher-pro.svg)](https://badge.fury.io/py/nordvpn-switcher-pro)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Python versions](https://img.shields.io/pypi/pyversions/nordvpn-switcher-pro.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue.svg)
@@ -8,17 +8,17 @@
 **NordVPN Switcher Pro** is a powerful Python library for automating NordVPN server connections on Windows. It is designed for developers and automation engineers who need reliable, criteria-based IP rotation for tasks like web scraping, data collection, and application testing.
 
 The library provides a simple interface to a complex process:
-- It uses a **stable, current NordVPN API (verified working as of July 2025)**.
+- It uses a **stable, current NordVPN API**.
 - It features a **one-time interactive setup** to configure your rotation rules.
 - Once configured, your scripts can run **headlessly without any user input**.
-- It intelligently **caches used servers** to avoid reconnecting to the same IP.
+- It intelligently **caches used servers** to avoid reconnecting to the same IP, with a state that persists across script restarts.
 
 The core focus is providing robust control over the NordVPN client. It does not include unrelated functionality.
 
 ## Key Features
 
 - **Interactive Setup**: A guided command-line interface to create your connection settings.
-- **Criteria-Based Rotation**: Connect to servers by Country, City, Region, a custom list of countries (inclusion or exclusion), or special groups (e.g., P2P, Double VPN).
+- **Criteria-Based Rotation**: Connect to servers by Country, City, Region, a custom list of countries (inclusion or exclusion), a custom list of cities, or special groups (e.g., P2P, Double VPN).
 - **Smart Caching**: Remembers recently used servers and avoids them for a configurable duration (default: 24 hours).
 - **Resilient**: Gracefully handles connection failures and automatically falls back to the least-recently-used server if all fresh options are exhausted.
 - **Headless Operation**: After the initial setup, it runs without any prompts, making it perfect for automated scripts and servers.
@@ -71,7 +71,7 @@ finally:
 ```
 
 > Tip: Save your progress in a finally block  
-> NordVPN's CLI can occasionally fail or raise unexpected errors. To avoid losing your work (like scraped data), always wrap your long-running logic in try/finally and save your progress in the finally block.
+> NordVPN's CLI can on rare occasions fail or raise unexpected errors. To avoid losing your work (like scraped data), always wrap your long-running logic in try/finally and save your progress in the finally block.
 
 ## Connection Settings Explained
 
@@ -93,7 +93,8 @@ During the interactive setup, you'll be asked to define your rotation strategy. 
 #### Server Selection Strategy (How to select)
 
 - **Best available (recommended for IP rotation)**: Uses NordVPN's algorithm to find a server with the best combination of low latency (distance from you) and low load. This is ideal for quickly getting a new, high-performance IP.
-- **Randomized by load (recommended for Geo rotation)**: Fetches *all* available servers for your chosen scope, groups them by load (0-20%, 20-30%, 30-40%, etc.), and picks a random server from the lowest-load bucket that is still unused. This provides greater server diversity.
+- **Randomized by load (recommended for simple Geo rotation)**: Fetches *all* available servers for your chosen scope, groups them by load (0-20%, 20-30%, 30-40%, etc.), and picks a random server from the lowest-load bucket that is still unused. This provides greater server diversity than "Best available". Note that locations with many servers will naturally appear more frequently.
+- **Randomized by country/city (Advanced Geo rotation)**: During setup, you may be offered advanced geo-rotation strategies. These ensure that each new connection is in a different country or city than the last. This strategy prioritizes geographic diversity above all else, which may result in a smaller pool of available servers. Even when falling back to the cache, the switcher will still attempt to pick a server from a different location than the last one, ensuring the rotation pattern is maintained.
 
 ## Visual Setup Examples
 
@@ -128,7 +129,21 @@ Here are a few GIFs demonstrating how to create different rotation strategies us
 </details>
 
 <details>
-<summary><strong>Example 3: Worldwide Random</strong></summary>
+<summary><strong>Example 3: Custom City Region (US Tech Hubs)</strong></summary>
+
+**Goal:** Rotate through servers in specific US cities, ensuring each rotation is in a different city.
+
+**Configuration:**
+- **Scope:** Custom Region (City)
+- **Cities:** Seattle, San Francisco, New York
+- **Strategy:** Randomized by city
+
+![Setup for US Tech Hubs](https://raw.githubusercontent.com/Sebastian7700/nordvpn-switcher-pro/main/assets/setup_custom_region_cities.gif)
+
+</details>
+
+<details>
+<summary><strong>Example 4: Worldwide Random</strong></summary>
 
 **Goal:** Get a random IP address from any standard server in the world.
 
@@ -141,7 +156,7 @@ Here are a few GIFs demonstrating how to create different rotation strategies us
 </details>
 
 <details>
-<summary><strong>Example 4: Special P2P Group</strong></summary>
+<summary><strong>Example 5: Special P2P Group</strong></summary>
 
 **Goal:** Connect to NordVPN's optimized P2P server group.
 
@@ -168,6 +183,58 @@ This is optional and only needed if auto-detection fails. The path will be saved
 
 </details>
 
+<details>
+<summary><strong>Tip: Customizing the Server Cache Duration</strong></summary>
+
+You can control how long a server is considered "recently used" with the `cache_expiry_hours` argument. The default is 24 hours.
+
+```python
+# Servers will be available for reconnection after only 1 hour.
+switcher = VpnSwitcher(cache_expiry_hours=1)
+
+# Servers will be avoided for an entire week.
+switcher = VpnSwitcher(cache_expiry_hours=168)
+```
+A shorter duration is useful for tasks that can tolerate reusing IPs, especially with a limited server pool. A longer duration is better if a service restricts access from the same IP over an extended period.
+</details>
+
+<details>
+<summary><strong>Tip: Forcing the Interactive Setup</strong></summary>
+
+To re-run the interactive setup and overwrite your existing `nordvpn_settings.json`, use the `force_setup=True` argument:
+
+```python
+# This will ignore any existing settings file and launch the setup.
+switcher = VpnSwitcher(force_setup=True)
+```
+
+</details>
+
+<details>
+<summary><strong>Tip: Starting with a Fresh Server Cache</strong></summary>
+
+If you want to ignore the cache of previously used servers and start a session as if it were the first time, you can initialize the switcher with `clear_server_cache=True`:
+
+```python
+# Clears the server cache from "nordvpn_settings.json" on startup
+switcher = VpnSwitcher(clear_server_cache=True)
+```
+This is useful for testing or if you've exhausted all servers and want to start over.
+
+</details>
+
+<details>
+<summary><strong>Tip: Closing the NordVPN Application</strong></summary>
+
+By default, `terminate()` disconnects from the VPN but leaves the NordVPN application running. To close the app completely, use `close_app=True`:
+
+```python
+switcher.terminate(close_app=True)
+```
+This is useful for freeing up system resources on automated servers, or simply for the convenience of not having to close the app manually.
+
+</details>
+
 ### Multiple Rotation Strategies
 
 You can maintain multiple, independent rotation strategies by creating different `VpnSwitcher` instances, each with its own settings file. This is useful for complex workflows that require different geographic targets.
@@ -191,6 +258,7 @@ videos_to_download = [
 ]
 
 # 2. Initialize a VPN switcher for each region
+# This will create "us_settings.json" and "jp_settings.json" via interactive setup
 us_switcher = VpnSwitcher(settings_path="us_settings.json")
 jp_switcher = VpnSwitcher(settings_path="jp_settings.json")
 
@@ -215,48 +283,54 @@ for video in videos_to_download:
 
 # 5. Terminate sessions and save caches
 us_switcher.terminate()
-jp_switcher.terminate(close_app = True)  # Optionally close NordVPN
+jp_switcher.terminate(close_app=True)  # Optionally close NordVPN entirely
 
 print("\nAll tasks complete.")
-
 ```
 
 ### Manual Rotation Control
 
-If you have selected the **Specific Country** or **Specific City** scope, for more fine-grained control you can manually trigger a switch to the next configured location (country or city) using `rotate(next_location=True)`.
+If you have selected the **Specific Country** or **Specific City** scope, you have fine-grained control over when to switch locations.
 
-This parameter forces the switcher to advance to the next country or city in your configured sequence, even if you haven't used all the servers in the current location.
+- `rotate(next_location=True)`: This forces the switcher to advance to the next country or city in your configured sequence, even if you haven't used all the servers in the current location.
 
-> **Note**: This feature only works if you have configured the switcher with the **Specific Country** or **Specific City** scope and provided more than one location ID during setup.
+- `rotate(prevent_auto_switch=True)`: This stops the switcher from automatically moving to the next location when the current one runs out of fresh servers. Instead, it will fall back to using cached (already used) servers from the *current* location. This gives you strict control to remain within a specific geographic boundary.
 
-#### Example: Forcing a Country Switch
+> **Note**: These features only work if you have configured the switcher with the **Specific Country** or **Specific City** scope and provided more than one location during setup.
 
-Imagine you need to process 5 tasks in Germany, then immediately switch to France for the next 5 tasks.
+#### Example: Combining Manual Controls
+
+Imagine your task requires you to connect to Luxembourg (which has few servers) and then to Belgium. You must complete 10 tasks in Luxembourg, even if it means reusing IPs, before moving on.
 
 ```python
 from nordvpn_switcher_pro import VpnSwitcher
 import time
 
-# Assume this switcher was configured with Germany then France.
-switcher = VpnSwitcher(settings_path='de_fr_settings.json')
+# Assume this switcher was configured with Luxembourg then Belgium.
+switcher = VpnSwitcher(settings_path='lux_bel_settings.json')
 switcher.start_session()
 
 try:
-    # --- Process Germany Tasks ---
-    for i in range(5):
-        switcher.rotate()
-        print(f"Processing Germany task {i+1}...")
+    # --- Process Luxembourg Tasks ---
+    print("--- Starting tasks in Luxembourg ---")
+    for i in range(10):
+        # Using prevent_auto_switch ensures we don't accidentally switch to Belgium
+        # if Luxembourg's small server pool is exhausted early.
+        switcher.rotate(prevent_auto_switch=True)
+        print(f"Processing Luxembourg task {i+1}...")
         time.sleep(3)
 
-    # --- Manually switch to France for the next set of tasks ---
-    print("\nFinished Germany tasks. Forcing switch to next country...")
+    # --- Manually switch to Belgium for the next set of tasks ---
+    print("\nFinished Luxembourg tasks. Forcing switch to next country...")
     switcher.rotate(next_location=True)
     
-    # --- Process France Tasks ---
+    # --- Process Belgium Tasks ---
+    print("\n--- Starting tasks in Belgium ---")
     for i in range(5):
-        # We don't need next_location=True here anymore
-        switcher.rotate()
-        print(f"Processing France task {i+1}...")
+        if i > 0:
+            # No special parameters needed here, normal rotation within Belgium.
+            switcher.rotate()
+        print(f"Processing Belgium task {i+1}...")
         time.sleep(3)
 
 finally:
