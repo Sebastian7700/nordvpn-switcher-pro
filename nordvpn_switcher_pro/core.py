@@ -148,6 +148,7 @@ class VpnSwitcher:
         self._is_session_active = True
         if self._controller_type:
             self._controller = self._controller_type(self.settings.exe_path)
+            self.api_client.register_dns_flusher(self._controller.flush_dns_cache)
             self._controller.disconnect()
         else:
             raise ConfigurationError("No VPN controller available for your platform")
@@ -261,13 +262,13 @@ class VpnSwitcher:
         try:
             self._controller.connect(target_server['name'])
             self._verify_connection(logging_name)
-            self._session_connections += 1
-            self._last_connected_loc_id = self._get_loc_key(target_server)
         except NordVpnConnectionError as e:
             ui.display_critical_error(str(e))
             raise # Re-raise the exception after informing the user
 
-        # On success, update cache and save
+        # On success, update cache and save state
+        self._session_connections += 1
+        self._last_connected_loc_id = self._get_loc_key(target_server)
         self.settings.used_servers_cache[target_server['id']] = time.time()
         self.settings.save(self.settings_path)
 
@@ -1455,7 +1456,9 @@ class VpnSwitcher:
     def _verify_connection(self, target_name: str):
         """
         Verifies a new connection is active, protected, and different from the
-        last known IP. API retries are handled internally by the API client.
+        last known IP. API retries are handled internally by the API client, and
+        this method performs up to three additional verification attempts with
+        incremental delays to avoid false negatives immediately after a switch.
 
         Args:
             target_name (str): The name of the server/group for logging.
@@ -1463,27 +1466,41 @@ class VpnSwitcher:
         Raises:
             NordVpnConnectionError: If the connection cannot be verified.
         """
-        print(f"\x1b[33mWaiting 3s before checking connection status...\x1b[0m")
+        # Initial wait to allow connection to stabilize. It is possible to decrease this,
+        # but it might lead to connection issues and a longer overall wait due to timeouts and retries.
+        print("\x1b[33mWaiting 3s before checking connection status...\x1b[0m")
         time.sleep(3)
 
-        try:
-            new_ip_info = self.api_client.get_current_ip_info(
-                error_message_prefix="Could not fetch IP, network may be changing"
-            )
-            new_ip = new_ip_info.get("ip")
-        except ApiClientError as e:
-            # API client has already retried internally with increasing delays
-            raise NordVpnConnectionError(f"Failed to fetch IP information: {e}") from e
+        verification_delays = [3, 5, 7]
+        attempts = len(verification_delays) + 1
+        last_ip_info = {}
 
-        if new_ip and new_ip != self._last_known_ip and new_ip_info.get("protected"):
-            print(f"\x1b[32m[{time.strftime('%H:%M:%S', time.localtime())}] Rotation successful!\x1b[0m")
-            print(f"\x1b[32mConnected to {target_name}. New IP: {new_ip}\x1b[0m")
-            self._last_known_ip = new_ip
-            return  # Success!
+        for attempt in range(attempts):
+            try:
+                new_ip_info = self.api_client.get_current_ip_info(
+                    error_message_prefix="Could not fetch IP, network may be changing"
+                )
+                new_ip = new_ip_info.get("ip")
+                last_ip_info = new_ip_info
+            except ApiClientError as e:
+                raise NordVpnConnectionError(f"Failed to fetch IP information: {e}") from e
+
+            if new_ip and new_ip != self._last_known_ip and new_ip_info.get("protected"):
+                print(f"\x1b[32m[{time.strftime('%H:%M:%S', time.localtime())}] Rotation successful!\x1b[0m")
+                print(f"\x1b[32mConnected to {target_name}. New IP: {new_ip}\x1b[0m")
+                self._last_known_ip = new_ip
+                return  # Success!
+
+            if attempt < len(verification_delays):
+                delay = verification_delays[attempt]
+                print(f"\x1b[33mIP verification inconclusive (Attempt {attempt + 1}/{attempts}). Retrying in {delay}s...\x1b[0m")
+                time.sleep(delay)
+            else:
+                break
 
         # Connection doesn't meet criteria
         raise NordVpnConnectionError(
             f"Failed to verify connection to {target_name}. "
-            f"IP: {new_ip}, Protected: {new_ip_info.get('protected')}, "
-            f"Same as last: {new_ip == self._last_known_ip if new_ip else 'N/A'}"
+            f"IP: {last_ip_info.get('ip')}, Protected: {last_ip_info.get('protected')}, "
+            f"Same as last: {last_ip_info.get('ip') == self._last_known_ip if last_ip_info.get('ip') else 'N/A'}"
         )

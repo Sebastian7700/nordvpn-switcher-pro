@@ -182,6 +182,26 @@ class WindowsVpnController:
         print("\n\x1b[34mDisconnecting from NordVPN...\x1b[0m")
         self._run_command(["-d"])
 
+    def flush_dns_cache(self):
+        """
+        Flushes the Windows DNS resolver cache using `ipconfig /flushdns`.
+
+        Raises:
+            NordVpnCliError: If the flush command fails.
+        """
+        try:
+            subprocess.run(
+                ["ipconfig", "/flushdns"],
+                capture_output=True,
+                text=True,
+                check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except subprocess.CalledProcessError as e:
+            raise NordVpnCliError(f"DNS flush failed: {e.stderr or e.stdout}") from e
+        except Exception as e:
+            raise NordVpnCliError(f"Unexpected error while flushing DNS: {e}") from e
+
     def close(self, force: bool = False):
         """
         Closes the NordVPN process entirely.
